@@ -1,0 +1,24 @@
+# dvc.yaml
+stages:
+
+  preprocess:
+    cmd: poetry run python pricing_epac/preprocessing/full_preprocess.py
+    deps:
+      - pricing_epac/preprocessing/full_preprocess.py
+      - data/raw/concateneRAHMA4.xlsx
+    outs:
+      - data/processed/pricing_fully_cleaned.xlsx
+
+  train:
+    cmd: poetry run python pricing_epac/models/train_and_compare.py
+    deps:
+      - src/models/train_and_compare.py
+      - data/processed/pricing_fully_cleaned.xlsx
+      - src/models/cover_size_pipeline.pkl          # si tu l'utilises encore
+    params:
+      - train_and_compare.py:                       # optionnel : versionner les hyperparamètres
+          - model_configs
+    outs:
+      - models/best_*.joblib                        # wildcard (tous les best_*.joblib)
+      - models/scaler.joblib
+      - models/selected_features.pkl
