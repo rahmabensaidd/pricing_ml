@@ -65,3 +65,28 @@ pred_vs_true_*.png
 # Docker
 # ===============================
 *.env
+
+
+# DVC
+.dvc/cache/
+.dvc/tmp/
+
+
+# Données et modèles (gros fichiers)
+#data/raw/*
+#data/processed/*.xlsx
+#data/processed/*.parquet
+# Ignorer les gros fichiers binaires / données
+data/raw/*.xlsx
+data/raw/*.parquet
+data/processed/*.xlsx
+data/processed/*.parquet
+models/*.pkl
+models/*.joblib
+models/*.pickle
+
+# Mais NE PAS ignorer les fichiers .dvc (DVC les gère)
+!*.dvc
+!data/**/*.dvc
+!models/**/*.dvc
+/models
