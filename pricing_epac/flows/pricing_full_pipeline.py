@@ -57,12 +57,90 @@ def sanitize_name(name: str) -> str:
 
 
 # ────────────────────────────────────────────────
+# DVC Hash utilities
+# ────────────────────────────────────────────────
+def compute_dvc_hash(file_path: Path) -> str:
+    """
+    Computes DVC-style MD5 hash for a file
+    Used to track model versions with DVC
+    """
+    if not file_path.exists():
+        return "file_not_found"
+
+    hash_md5 = hashlib.md5()
+    with open(file_path, "rb") as f:
+        # Read in chunks to handle large files
+        for chunk in iter(lambda: f.read(4096), b""):
+            hash_md5.update(chunk)
+
+    return hash_md5.hexdigest()
+
+
+def compute_directory_dvc_hash(directory: Path) -> Dict[str, str]:
+    """
+    Computes DVC-style MD5 hashes for all files in a directory
+    Returns a dictionary of {file_path: hash}
+    """
+    if not directory.exists() or not directory.is_dir():
+        return {}
+
+    hashes = {}
+    for file_path in directory.glob("**/*"):
+        if file_path.is_file():
+            # Skip hidden files and temporary files
+            if not file_path.name.startswith('.') and not file_path.name.endswith('.tmp'):
+                rel_path = file_path.relative_to(directory)
+                hashes[str(rel_path)] = compute_dvc_hash(file_path)
+
+    return hashes
+
+
+def save_dvc_hash_tracking(model_name: str, version: int, artifact_paths: List[Path], output_dir: Path) -> Path:
+    """
+    Saves DVC hash tracking information for model artifacts
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    tracking_file = output_dir / f"dvc_hashes_{model_name}_v{version}_{timestamp}.json"
+
+    tracking_info = {
+        "model_name": model_name,
+        "version": version,
+        "timestamp": timestamp,
+        "git_commit": get_git_commit_hash(),
+        "artifacts": {}
+    }
+
+    for artifact_path in artifact_paths:
+        if artifact_path and artifact_path.exists():
+            if artifact_path.is_file():
+                tracking_info["artifacts"][str(artifact_path)] = {
+                    "hash": compute_dvc_hash(artifact_path),
+                    "size": artifact_path.stat().st_size,
+                    "type": "file"
+                }
+            elif artifact_path.is_dir():
+                tracking_info["artifacts"][str(artifact_path)] = {
+                    "files": compute_directory_dvc_hash(artifact_path),
+                    "total_files": len(list(artifact_path.glob("**/*"))),
+                    "type": "directory"
+                }
+
+    with open(tracking_file, 'w') as f:
+        json.dump(tracking_info, f, indent=2)
+
+    print(f"   ✅ DVC hash tracking saved: {tracking_file}")
+    return tracking_file
+
+
+# ────────────────────────────────────────────────
 # Configuration - MLflow Server Version
 # ────────────────────────────────────────────────
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 PACKAGE_DIR = PROJECT_ROOT / "pricing_epac"
 MODELS_DIR = PROJECT_ROOT / "models"
 MLRUNS_DIR = PROJECT_ROOT / "mlruns"
+DVC_TRACKING_DIR = MODELS_DIR / "dvc_tracking"
 TARGET = "unit_price"
 MLFLOW_MODEL_NAME_GLOBAL = "PricingModelGlobal"
 MLFLOW_MODEL_NAME_CLIENT_FEATURES = "ClientFeatures"
@@ -72,6 +150,7 @@ ENRICHED_DATA_FILE = PROJECT_ROOT / "data" / "enriched" / "dataset_with_client_f
 # Create necessary directories
 MODELS_DIR.mkdir(exist_ok=True)
 MLRUNS_DIR.mkdir(exist_ok=True)
+DVC_TRACKING_DIR.mkdir(parents=True, exist_ok=True)
 ENRICHED_DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
 CLIENT_FEATURES_FILE.parent.mkdir(parents=True, exist_ok=True)
 
@@ -221,6 +300,8 @@ TAG_DATA_TYPE = "data_type"
 TAG_N_CLIENTS = "n_clients"
 TAG_N_FEATURES = "n_features"
 TAG_ARTIFACT_PATH = "artifact_path"  # NEW: To store artifact path
+TAG_DVC_HASH = "dvc_hash"  # NEW: DVC hash tag
+TAG_DVC_TRACKED = "dvc_tracked"  # NEW: Whether model is tracked with DVC
 
 
 # ────────────────────────────────────────────────
@@ -378,10 +459,29 @@ def create_comparison_plot(df: pd.DataFrame, output_path: Path, title: str = "Mo
 # ────────────────────────────────────────────────
 # MLflow tag management
 # ────────────────────────────────────────────────
-def set_model_version_tags(model_name: str, version: int, tags: Dict[str, str]) -> bool:
-    """Adds tags to a specific model version"""
+def set_model_version_tags(model_name: str, version: int, tags: Dict[str, str],
+                           artifact_paths: List[Path] = None) -> bool:
+    """
+    Adds tags to a specific model version
+    Now includes DVC hash if artifact paths are provided
+    """
     try:
         client = MlflowClient()
+
+        # Add DVC hash if artifacts are provided
+        if artifact_paths:
+            dvc_hashes = {}
+            for path in artifact_paths:
+                if path and path.exists():
+                    if path.is_file():
+                        dvc_hashes[str(path)] = compute_dvc_hash(path)
+                    elif path.is_dir():
+                        dvc_hashes[str(path)] = str(compute_directory_dvc_hash(path))
+
+            if dvc_hashes:
+                tags[TAG_DVC_HASH] = json.dumps(dvc_hashes)
+                tags[TAG_DVC_TRACKED] = "true"
+
         for key, value in tags.items():
             client.set_model_version_tag(model_name, str(version), key, str(value))
         print(f"   → Tags added to {model_name} v{version}: {list(tags.keys())}")
@@ -662,6 +762,7 @@ class ClientFeaturesWrapper(PythonModel):
 def mlflow_log_client_features(client_features: pd.DataFrame, cleaned_file: Path) -> Dict[str, Any]:
     """
     Registers client features in MLflow as a versioned model
+    Now with DVC hash tracking
     """
     print("\n" + "=" * 60)
     print("📊 MLFLOW LOGGING CLIENT FEATURES")
@@ -675,17 +776,23 @@ def mlflow_log_client_features(client_features: pd.DataFrame, cleaned_file: Path
         print(f"📝 MLflow Run ID: {run.info.run_id}")
         print(f"📝 MLflow Experiment ID: {run.info.experiment_id}")
 
+        # Calculate DVC hash of input file
+        input_dvc_hash = compute_dvc_hash(cleaned_file)
+        print(f"   🔗 Input data DVC hash: {input_dvc_hash}")
+
         # Tags
         mlflow.set_tag("data_type", "client_features")
         mlflow.set_tag("git_commit", get_git_commit_hash())
         mlflow.set_tag("run_name", run_name)
         mlflow.set_tag("source_file", str(cleaned_file))
+        mlflow.set_tag("input_data_dvc_hash", input_dvc_hash)
 
         # Parameters
         mlflow.log_param("n_clients", len(client_features))
         mlflow.log_param("n_features", len(client_features.columns) - 1)  # -1 for siren
         mlflow.log_param("min_samples_elasticity", 8)
         mlflow.log_param("min_price_cv", 0.05)
+        mlflow.log_param("input_data_dvc_hash", input_dvc_hash)
 
         # Metrics
         if 'client_price_elasticity' in client_features.columns:
@@ -724,6 +831,22 @@ def mlflow_log_client_features(client_features: pd.DataFrame, cleaned_file: Path
             features_joblib = tmp_path / "client_features.joblib"
             dump(client_features, features_joblib)
 
+            # Calculate DVC hashes for generated files
+            csv_hash = compute_dvc_hash(features_csv)
+            excel_hash = compute_dvc_hash(features_excel)
+            joblib_hash = compute_dvc_hash(features_joblib)
+
+            mlflow.log_params({
+                "csv_dvc_hash": csv_hash,
+                "excel_dvc_hash": excel_hash,
+                "joblib_dvc_hash": joblib_hash
+            })
+
+            print(f"   🔗 Generated file hashes:")
+            print(f"      CSV: {csv_hash}")
+            print(f"      Excel: {excel_hash}")
+            print(f"      Joblib: {joblib_hash}")
+
             # Create JSON summary with all information
             summary = {
                 "timestamp": datetime.now().isoformat(),
@@ -734,6 +857,7 @@ def mlflow_log_client_features(client_features: pd.DataFrame, cleaned_file: Path
                 "n_features": len(client_features.columns) - 1,
                 "columns": list(client_features.columns),
                 "source_file": str(cleaned_file),
+                "source_file_dvc_hash": input_dvc_hash,
                 "parameters": {
                     "min_samples_elasticity": 8,
                     "min_price_cv": 0.05
@@ -744,6 +868,11 @@ def mlflow_log_client_features(client_features: pd.DataFrame, cleaned_file: Path
                     "excel": "client_features.xlsx",
                     "joblib": "client_features.joblib",
                     "summary": "client_features_summary.json"
+                },
+                "dvc_hashes": {
+                    "csv": csv_hash,
+                    "excel": excel_hash,
+                    "joblib": joblib_hash
                 }
             }
 
@@ -866,6 +995,12 @@ def mlflow_log_client_features(client_features: pd.DataFrame, cleaned_file: Path
                     "joblib": "features/client_features.joblib",
                     "summary": "features/client_features_summary.json",
                     "plots": "features/plots/"
+                },
+                "dvc_hashes": {
+                    "csv": csv_hash,
+                    "excel": excel_hash,
+                    "joblib": joblib_hash,
+                    "input_data": input_dvc_hash
                 }
             }
 
@@ -890,6 +1025,14 @@ def mlflow_log_client_features(client_features: pd.DataFrame, cleaned_file: Path
             version = getattr(model_info, 'registered_model_version', None)
 
             if version:
+                # Save DVC hash tracking file
+                dvc_tracking_file = save_dvc_hash_tracking(
+                    MLFLOW_MODEL_NAME_CLIENT_FEATURES,
+                    int(version),
+                    [features_csv, features_excel, features_joblib, summary_json],
+                    DVC_TRACKING_DIR
+                )
+
                 # Add tags to the version
                 tags = {
                     TAG_LIFECYCLE_STATUS: "new",
@@ -900,7 +1043,12 @@ def mlflow_log_client_features(client_features: pd.DataFrame, cleaned_file: Path
                     TAG_N_FEATURES: str(len(client_features.columns) - 1),
                     TAG_RUN_ID: run.info.run_id,
                     TAG_RUN_NAME: run_name,
-                    TAG_ARTIFACT_PATH: f"{run.info.artifact_uri}/client_features_model"
+                    TAG_ARTIFACT_PATH: f"{run.info.artifact_uri}/client_features_model",
+                    TAG_DVC_TRACKED: "true",
+                    "input_data_dvc_hash": input_dvc_hash,
+                    "csv_dvc_hash": csv_hash,
+                    "joblib_dvc_hash": joblib_hash,
+                    "dvc_tracking_file": str(dvc_tracking_file)
                 }
 
                 if 'client_price_elasticity' in client_features.columns:
@@ -920,6 +1068,7 @@ def mlflow_log_client_features(client_features: pd.DataFrame, cleaned_file: Path
 
                 print(f"\n✅ Client features model registered: {MLFLOW_MODEL_NAME_CLIENT_FEATURES} v{version}")
                 print(f"   📁 Artifacts available at: {run.info.artifact_uri}/client_features_model")
+                print(f"   🔗 DVC tracking: {dvc_tracking_file}")
             else:
                 print("\n⚠️ Client features model not registered in registry")
 
@@ -941,7 +1090,14 @@ def mlflow_log_client_features(client_features: pd.DataFrame, cleaned_file: Path
                 "excel": f"{run.info.artifact_uri}/features/client_features.xlsx",
                 "joblib": f"{run.info.artifact_uri}/features/client_features.joblib",
                 "summary": f"{run.info.artifact_uri}/features/client_features_summary.json"
-            }
+            },
+            "dvc_hashes": {
+                "input_data": input_dvc_hash,
+                "csv": csv_hash,
+                "excel": excel_hash,
+                "joblib": joblib_hash
+            },
+            "dvc_tracking_file": str(dvc_tracking_file) if version else None
         }
 
 
@@ -983,7 +1139,7 @@ def run_preprocessing() -> Tuple[Path, pd.DataFrame]:
 
 @task(name="Global Model Training")
 def run_global_training(cleaned_file: Path, sample_X: pd.DataFrame) -> Dict[str, Any]:
-    """Trains the global model and registers it in MLflow"""
+    """Trains the global model and registers it in MLflow with DVC hash tracking"""
     print("\n" + "=" * 70)
     print("🌍 GLOBAL MODEL TRAINING")
     print("=" * 70)
@@ -996,6 +1152,10 @@ def run_global_training(cleaned_file: Path, sample_X: pd.DataFrame) -> Dict[str,
     mlflow.set_experiment("Pricing_Global_Model")
     run_name = f"global-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
 
+    # Calculate DVC hash of input file
+    input_dvc_hash = compute_dvc_hash(cleaned_file)
+    print(f"\n🔗 Input data DVC hash: {input_dvc_hash}")
+
     with mlflow.start_run(run_name=run_name) as run:
         print(f"Run ID       : {run.info.run_id}")
         print(f"Experiment ID: {run.info.experiment_id}")
@@ -1003,12 +1163,14 @@ def run_global_training(cleaned_file: Path, sample_X: pd.DataFrame) -> Dict[str,
         mlflow.set_tag("model_type", "global")
         mlflow.set_tag("git_commit", get_git_commit_hash())
         mlflow.set_tag("run_name", run_name)
+        mlflow.set_tag("input_data_dvc_hash", input_dvc_hash)
 
         mlflow.log_params({
             "features_count": len(RAW_FEATURES),
             "num_features": len(NUM_VARS),
             "cat_features": len(CAT_VARS),
-            "target": TARGET
+            "target": TARGET,
+            "input_data_dvc_hash": input_dvc_hash
         })
 
         # === MODIFICATION: Also retrieve feature importance ===
@@ -1129,7 +1291,8 @@ def run_global_training(cleaned_file: Path, sample_X: pd.DataFrame) -> Dict[str,
             "run_id": run.info.run_id,
             "run_name": run_name,
             "comparison_table": "comparisons/global_model_comparison.csv",
-            "bool_cols_as_int": bool_cols_as_int
+            "bool_cols_as_int": bool_cols_as_int,
+            "input_data_dvc_hash": input_dvc_hash
         }
 
         # Add feature importance to metadata if available
@@ -1147,6 +1310,20 @@ def run_global_training(cleaned_file: Path, sample_X: pd.DataFrame) -> Dict[str,
         version = getattr(model_info, 'registered_model_version', None)
 
         if version:
+            # Save model temporarily to compute its hash
+            temp_model_path = MODELS_DIR / f"temp_global_model_v{version}.joblib"
+            dump(best_pipe, temp_model_path)
+            model_dvc_hash = compute_dvc_hash(temp_model_path)
+            temp_model_path.unlink()  # Remove temporary file
+
+            # Save DVC hash tracking file
+            dvc_tracking_file = save_dvc_hash_tracking(
+                MLFLOW_MODEL_NAME_GLOBAL,
+                int(version),
+                [Path(cleaned_file)],
+                DVC_TRACKING_DIR
+            )
+
             try:
                 client = MlflowClient()
                 client.update_model_version(
@@ -1164,8 +1341,12 @@ def run_global_training(cleaned_file: Path, sample_X: pd.DataFrame) -> Dict[str,
                     TAG_BEST_MODEL: best_name,
                     TAG_RUN_ID: run.info.run_id,
                     TAG_RUN_NAME: run_name,
+                    TAG_DVC_TRACKED: "true",
                     # Add tag indicating booleans are integers
-                    "bool_cols_as_int": json.dumps(bool_cols_as_int)
+                    "bool_cols_as_int": json.dumps(bool_cols_as_int),
+                    "input_data_dvc_hash": input_dvc_hash,
+                    "model_dvc_hash": model_dvc_hash,
+                    "dvc_tracking_file": str(dvc_tracking_file)
                 }
 
                 # ADD: Add feature importance to tags
@@ -1185,6 +1366,7 @@ def run_global_training(cleaned_file: Path, sample_X: pd.DataFrame) -> Dict[str,
         print(f"MLflow version: {version or 'not registered'}")
         if feature_importance:
             print(f"📊 Feature importance: {len(feature_importance)} features extracted")
+        print(f"🔗 Model DVC hash: {model_dvc_hash if version else 'N/A'}")
 
         return {
             "best_model_name": best_name,
@@ -1198,7 +1380,12 @@ def run_global_training(cleaned_file: Path, sample_X: pd.DataFrame) -> Dict[str,
             "run_name": run_name,
             "bool_cols_as_int": bool_cols_as_int,
             "feature_importance": feature_importance,  # ADD: Return feature importance
-            "feature_importance_json": feature_importance_json  # ADD: Return JSON version
+            "feature_importance_json": feature_importance_json,  # ADD: Return JSON version
+            "dvc_hashes": {
+                "input_data": input_dvc_hash,
+                "model": model_dvc_hash if version else None
+            },
+            "dvc_tracking_file": str(dvc_tracking_file) if version else None
         }
 
 
@@ -1261,6 +1448,8 @@ def create_client_features_task(cleaned_file: Path) -> Tuple[Path, pd.DataFrame,
     print(f"   - MLflow Experiment: {mlflow_result['experiment_id']}")
     print(f"   - MLflow Model: {mlflow_result.get('model_name', 'N/A')} v{mlflow_result.get('model_version', 'N/A')}")
     print(f"   - Artifacts: {mlflow_result.get('artifact_uri', 'N/A')}")
+    if mlflow_result.get('dvc_hashes'):
+        print(f"   - DVC hashes: {mlflow_result['dvc_hashes']}")
 
     if 'client_price_elasticity' in client_features.columns:
         non_zero = (client_features['client_price_elasticity'] != 0).sum()
@@ -1340,10 +1529,14 @@ def validate_client_features(client_features: pd.DataFrame) -> Dict[str, Any]:
 
 @task(name="Training by BindingType")
 def run_family_training(cleaned_file: Path) -> Dict[str, Any]:
-    """Trains models by BindingType with MLflow versioning"""
+    """Trains models by BindingType with MLflow versioning and DVC hash tracking"""
     print("\n" + "=" * 60)
     print("🏷️ STARTING MODELS BY BINDINGTYPE")
     print("=" * 60)
+
+    # Calculate DVC hash of input file
+    input_dvc_hash = compute_dvc_hash(cleaned_file)
+    print(f"\n🔗 Input data DVC hash: {input_dvc_hash}")
 
     def safe_start_run(run_name):
         try:
@@ -1365,6 +1558,9 @@ def run_family_training(cleaned_file: Path) -> Dict[str, Any]:
         mlflow.set_tag("model_type", "family")
         mlflow.set_tag("git_commit", get_git_commit_hash())
         mlflow.set_tag("run_name", run_name)
+        mlflow.set_tag("input_data_dvc_hash", input_dvc_hash)
+
+        mlflow.log_param("input_data_dvc_hash", input_dvc_hash)
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)
@@ -1429,7 +1625,8 @@ def run_family_training(cleaned_file: Path) -> Dict[str, Any]:
                         "best_model": str(lin["best_model"]),
                         "model_type": "linear",
                         "run_id": run.info.run_id,
-                        "run_name": run_name
+                        "run_name": run_name,
+                        "input_data_dvc_hash": input_dvc_hash
                     }
 
                     metrics_path = tmp_path / f"{family}_linear_metrics.json"
@@ -1482,6 +1679,14 @@ def run_family_training(cleaned_file: Path) -> Dict[str, Any]:
                         version = getattr(model_info, 'registered_model_version', None)
 
                         if version:
+                            # Save DVC hash tracking file
+                            dvc_tracking_file = save_dvc_hash_tracking(
+                                model_name,
+                                int(version),
+                                [pipeline_file],
+                                DVC_TRACKING_DIR
+                            )
+
                             initial_tags = {
                                 TAG_LIFECYCLE_STATUS: "new",
                                 TAG_TRAINING_DATE: datetime.now().isoformat(),
@@ -1492,7 +1697,10 @@ def run_family_training(cleaned_file: Path) -> Dict[str, Any]:
                                 TAG_PERFORMANCE_R2: str(float(lin["cv_r2"])),
                                 TAG_RUN_ID: run.info.run_id,
                                 TAG_RUN_NAME: run_name,
-                                "linear_formula": lin.get("formula", "")[:500] if lin.get("formula") else ""
+                                TAG_DVC_TRACKED: "true",
+                                "linear_formula": lin.get("formula", "")[:500] if lin.get("formula") else "",
+                                "input_data_dvc_hash": input_dvc_hash,
+                                "dvc_tracking_file": str(dvc_tracking_file)
                             }
                             set_model_version_tags(model_name, int(version), initial_tags)
 
@@ -1516,7 +1724,8 @@ def run_family_training(cleaned_file: Path) -> Dict[str, Any]:
                                 "comparison_table": f"{family}_linear_comparison.csv" if family_comparison else None,
                                 "run_id": run.info.run_id,
                                 "run_name": run_name,
-                                "formula": lin.get("formula")
+                                "formula": lin.get("formula"),
+                                "dvc_tracking_file": str(dvc_tracking_file)
                             })
                             print(f"   ✅ Family {family} (linear) versioned: {model_name} v{version}")
                 except Exception as e:
@@ -1563,7 +1772,8 @@ def run_family_training(cleaned_file: Path) -> Dict[str, Any]:
                         "shap_success": 1 if nl.get("shap_success") else 0,
                         "model_type": "nonlinear",
                         "run_id": run.info.run_id,
-                        "run_name": run_name
+                        "run_name": run_name,
+                        "input_data_dvc_hash": input_dvc_hash
                     }
 
                     metrics_path = tmp_path / f"{family}_nonlinear_metrics.json"
@@ -1621,6 +1831,14 @@ def run_family_training(cleaned_file: Path) -> Dict[str, Any]:
                         version = getattr(model_info, 'registered_model_version', None)
 
                         if version:
+                            # Save DVC hash tracking file
+                            dvc_tracking_file = save_dvc_hash_tracking(
+                                model_name,
+                                int(version),
+                                [pipeline_file],
+                                DVC_TRACKING_DIR
+                            )
+
                             initial_tags = {
                                 TAG_LIFECYCLE_STATUS: "new",
                                 TAG_TRAINING_DATE: datetime.now().isoformat(),
@@ -1631,7 +1849,10 @@ def run_family_training(cleaned_file: Path) -> Dict[str, Any]:
                                 TAG_PERFORMANCE_R2: str(float(nl["r2"])),
                                 TAG_RUN_ID: run.info.run_id,
                                 TAG_RUN_NAME: run_name,
-                                "shap_success": str(nl.get("shap_success", False))
+                                TAG_DVC_TRACKED: "true",
+                                "shap_success": str(nl.get("shap_success", False)),
+                                "input_data_dvc_hash": input_dvc_hash,
+                                "dvc_tracking_file": str(dvc_tracking_file)
                             }
 
                             if feature_importance_json:
@@ -1660,7 +1881,8 @@ def run_family_training(cleaned_file: Path) -> Dict[str, Any]:
                                 "run_id": run.info.run_id,
                                 "run_name": run_name,
                                 "shap_success": nl.get("shap_success", False),
-                                "feature_importance": nl.get("feature_importance")
+                                "feature_importance": nl.get("feature_importance"),
+                                "dvc_tracking_file": str(dvc_tracking_file)
                             })
                             print(f"   ✅ Family {family} (nonlinear) versioned: {model_name} v{version}")
                 except Exception as e:
@@ -1670,6 +1892,7 @@ def run_family_training(cleaned_file: Path) -> Dict[str, Any]:
                 "timestamp": datetime.now().isoformat(),
                 "run_id": run.info.run_id,
                 "run_name": run_name,
+                "input_data_dvc_hash": input_dvc_hash,
                 "linear_families": [
                     {
                         "family": f["family"],
@@ -1720,16 +1943,21 @@ def run_family_training(cleaned_file: Path) -> Dict[str, Any]:
             "nonlinear_families": [f["family"] for f in training_results["nonlinear"]],
             "created_models": mlflow_created_models,  # ← HERE: return list of models registered in MLflow
             "run_name": run_name,
-            "summary": summary
+            "summary": summary,
+            "input_data_dvc_hash": input_dvc_hash
         }
 
 
 @task(name="Training by Pair (BindingType × SIREN)")
 def run_couple_training(cleaned_file: Path) -> Dict[str, Any]:
-    """Trains models by pair (binding_type × siren) with MLflow versioning"""
+    """Trains models by pair (binding_type × siren) with MLflow versioning and DVC hash tracking"""
     print("\n" + "=" * 60)
     print("🔗 STARTING MODELS BY PAIR (BINDING_TYPE × SIREN)")
     print("=" * 60)
+
+    # Calculate DVC hash of input file
+    input_dvc_hash = compute_dvc_hash(cleaned_file)
+    print(f"\n🔗 Input data DVC hash: {input_dvc_hash}")
 
     def safe_start_run(run_name):
         try:
@@ -1749,6 +1977,9 @@ def run_couple_training(cleaned_file: Path) -> Dict[str, Any]:
         mlflow.set_tag("model_type", "couple")
         mlflow.set_tag("git_commit", get_git_commit_hash())
         mlflow.set_tag("run_name", run_name)
+        mlflow.set_tag("input_data_dvc_hash", input_dvc_hash)
+
+        mlflow.log_param("input_data_dvc_hash", input_dvc_hash)
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)
@@ -1915,7 +2146,8 @@ def run_couple_training(cleaned_file: Path) -> Dict[str, Any]:
                             "best_model": best_model,
                             "model_type": "linear",
                             "run_id": run.info.run_id,
-                            "run_name": run_name
+                            "run_name": run_name,
+                            "input_data_dvc_hash": input_dvc_hash
                         }
 
                         # Save metrics
@@ -1970,6 +2202,14 @@ def run_couple_training(cleaned_file: Path) -> Dict[str, Any]:
                         version = getattr(model_info, 'registered_model_version', None)
 
                         if version:
+                            # Save DVC hash tracking file
+                            dvc_tracking_file = save_dvc_hash_tracking(
+                                model_name,
+                                int(version),
+                                [pipeline_file],
+                                DVC_TRACKING_DIR
+                            )
+
                             # Tags with formula
                             initial_tags = {
                                 TAG_LIFECYCLE_STATUS: "new",
@@ -1981,8 +2221,11 @@ def run_couple_training(cleaned_file: Path) -> Dict[str, Any]:
                                 TAG_PERFORMANCE_R2: str(cv_r2),
                                 TAG_RUN_ID: run.info.run_id,
                                 TAG_RUN_NAME: run_name,
+                                TAG_DVC_TRACKED: "true",
                                 # ADD: Add formula to tags
-                                "linear_formula": formula[:500] if formula else ""
+                                "linear_formula": formula[:500] if formula else "",
+                                "input_data_dvc_hash": input_dvc_hash,
+                                "dvc_tracking_file": str(dvc_tracking_file)
                             }
 
                             # Add binding_type and siren as separate tags if available
@@ -2020,7 +2263,8 @@ def run_couple_training(cleaned_file: Path) -> Dict[str, Any]:
                                 "comparison_table": f"{safe_pair}_linear_comparison.csv" if pair_comparison else None,
                                 "run_id": run.info.run_id,
                                 "run_name": run_name,
-                                "formula": formula  # ADD: Store formula
+                                "formula": formula,  # ADD: Store formula
+                                "dvc_tracking_file": str(dvc_tracking_file)
                             })
                             print(f"   ✅ Pair {pair[:50]}... (linear) versioned: {model_name} v{version}")
                     else:
@@ -2096,7 +2340,8 @@ def run_couple_training(cleaned_file: Path) -> Dict[str, Any]:
                             "shap_success": 1 if shap_success else 0,
                             "model_type": "nonlinear",
                             "run_id": run.info.run_id,
-                            "run_name": run_name
+                            "run_name": run_name,
+                            "input_data_dvc_hash": input_dvc_hash
                         }
 
                         # Save metrics
@@ -2154,6 +2399,14 @@ def run_couple_training(cleaned_file: Path) -> Dict[str, Any]:
                         version = getattr(model_info, 'registered_model_version', None)
 
                         if version:
+                            # Save DVC hash tracking file
+                            dvc_tracking_file = save_dvc_hash_tracking(
+                                model_name,
+                                int(version),
+                                [pipeline_file],
+                                DVC_TRACKING_DIR
+                            )
+
                             initial_tags = {
                                 TAG_LIFECYCLE_STATUS: "new",
                                 TAG_TRAINING_DATE: datetime.now().isoformat(),
@@ -2164,8 +2417,11 @@ def run_couple_training(cleaned_file: Path) -> Dict[str, Any]:
                                 TAG_PERFORMANCE_R2: str(r2),
                                 TAG_RUN_ID: run.info.run_id,
                                 TAG_RUN_NAME: run_name,
+                                TAG_DVC_TRACKED: "true",
                                 # ADD: Add SHAP and feature importance tags
-                                "shap_success": str(shap_success)
+                                "shap_success": str(shap_success),
+                                "input_data_dvc_hash": input_dvc_hash,
+                                "dvc_tracking_file": str(dvc_tracking_file)
                             }
 
                             # ADD: Add binding_type and siren as separate tags
@@ -2207,8 +2463,8 @@ def run_couple_training(cleaned_file: Path) -> Dict[str, Any]:
                                 "run_id": run.info.run_id,
                                 "run_name": run_name,
                                 "shap_success": shap_success,  # ADD
-                                "feature_importance": nl.get("feature_importance") if isinstance(nl, dict) else None
-                                # ADD
+                                "feature_importance": nl.get("feature_importance") if isinstance(nl, dict) else None,
+                                "dvc_tracking_file": str(dvc_tracking_file)  # ADD
                             })
                             print(f"   ✅ Pair {pair[:50]}... (nonlinear) versioned: {model_name} v{version}")
                     else:
@@ -2225,10 +2481,11 @@ def run_couple_training(cleaned_file: Path) -> Dict[str, Any]:
                 "timestamp": datetime.now().isoformat(),
                 "run_id": run.info.run_id,
                 "run_name": run_name,
+                "input_data_dvc_hash": input_dvc_hash,
                 "linear_pairs": [
                     {
                         "pair": lin.get("family", lin.get("safe_couple", f"pair_{i}")) if isinstance(lin,
-                                                                                                      dict) else f"pair_{i}",
+                                                                                                     dict) else f"pair_{i}",
                         "binding_type": lin.get("binding_type", "") if isinstance(lin, dict) else "",
                         "siren": lin.get("siren", "") if isinstance(lin, dict) else "",
                         "best_model": lin.get("best_model", "unknown") if isinstance(lin, dict) else "unknown",
@@ -2251,7 +2508,7 @@ def run_couple_training(cleaned_file: Path) -> Dict[str, Any]:
                 "nonlinear_pairs": [
                     {
                         "pair": nl.get("family", nl.get("safe_couple", f"pair_{i}")) if isinstance(nl,
-                                                                                                    dict) else f"pair_{i}",
+                                                                                                   dict) else f"pair_{i}",
                         "binding_type": nl.get("binding_type", "") if isinstance(nl, dict) else "",
                         "siren": nl.get("siren", "") if isinstance(nl, dict) else "",
                         "best_model": nl.get("best_model", "unknown") if isinstance(nl, dict) else "unknown",
@@ -2297,7 +2554,8 @@ def run_couple_training(cleaned_file: Path) -> Dict[str, Any]:
                 i, nl in enumerate(nonlinear_results)],
             "created_models": created_models,
             "run_name": run_name,
-            "summary": summary
+            "summary": summary,
+            "input_data_dvc_hash": input_dvc_hash
         }
 
 
@@ -2329,6 +2587,7 @@ def promote_models(global_result: Optional[Dict] = None,
         model_name = global_result["model_name"]
         version = global_result["model_version"]
         metrics = global_result.get("metrics")
+        dvc_info = global_result.get("dvc_hashes", {})
 
         print(f"\n🌍 Configuring global model: {model_name}")
 
@@ -2342,7 +2601,8 @@ def promote_models(global_result: Optional[Dict] = None,
                 results["verified"].append({
                     "model_name": model_name,
                     "version": version,
-                    "alias": ALIAS_PRODUCTION
+                    "alias": ALIAS_PRODUCTION,
+                    "dvc_hashes": dvc_info
                 })
         else:
             print(f"   ⚠️ Version {version} is not the latest version (latest = v{latest_version})")
@@ -2371,7 +2631,8 @@ def promote_models(global_result: Optional[Dict] = None,
                     results["verified"].append({
                         "model_name": model_name,
                         "version": version,
-                        "alias": ALIAS_PRODUCTION
+                        "alias": ALIAS_PRODUCTION,
+                        "dvc_tracking_file": model_info.get("dvc_tracking_file")
                     })
                 else:
                     results["family"]["failed"].append(model_name)
@@ -2400,7 +2661,8 @@ def promote_models(global_result: Optional[Dict] = None,
                     results["verified"].append({
                         "model_name": model_name,
                         "version": version,
-                        "alias": ALIAS_PRODUCTION
+                        "alias": ALIAS_PRODUCTION,
+                        "dvc_tracking_file": model_info.get("dvc_tracking_file")
                     })
                 else:
                     results["couple"]["failed"].append(model_name)
@@ -2430,7 +2692,9 @@ def promote_models(global_result: Optional[Dict] = None,
                 results["verified"].append({
                     "model_name": model_name,
                     "version": version,
-                    "alias": ALIAS_PRODUCTION
+                    "alias": ALIAS_PRODUCTION,
+                    "dvc_hashes": client_features_result.get("dvc_hashes", {}),
+                    "dvc_tracking_file": client_features_result.get("dvc_tracking_file")
                 })
 
                 # Display artifact paths
@@ -2492,7 +2756,7 @@ def pricing_mlops_pipeline(
         once: bool = False,
         promote: bool = True
 ):
-    """MLOps pipeline for pricing models"""
+    """MLOps pipeline for pricing models with DVC hash tracking"""
     print("\n" + "=" * 80)
     print("🚀 PRICING MLOPS PIPELINE".center(80))
     print("=" * 80)
@@ -2505,6 +2769,7 @@ def pricing_mlops_pipeline(
     print(f"   - BindingType×SIREN: {'YES' if run_couple else 'NO'}")
     print(f"   - Clean: {'YES' if clean else 'NO'}")
     print(f"   - Production alias configuration: {'YES' if promote else 'NO'}")
+    print(f"   - DVC Tracking: YES")
 
     print(f"\n🔍 MLflow Tracking URI: {mlflow.get_tracking_uri()}")
     MLRUNS_DIR.mkdir(exist_ok=True)
@@ -2543,7 +2808,8 @@ def pricing_mlops_pipeline(
                 "path": str(enriched_path),
                 "stats": client_stats,
                 "n_clients": len(client_features) if not client_features.empty else 0,
-                "mlflow": mlflow_result
+                "mlflow": mlflow_result,
+                "dvc_hashes": mlflow_result.get("dvc_hashes", {})
             }
 
             # Store result for promotion
@@ -2581,6 +2847,8 @@ def pricing_mlops_pipeline(
             global_results = run_global_training(training_data_path, sample_X)
             results["global"] = global_results
             print(f"✅ Global model completed - Version: {global_results.get('model_version', 'N/A')}")
+            if global_results.get("dvc_hashes"):
+                print(f"   🔗 DVC hashes: {global_results['dvc_hashes']}")
         except Exception as e:
             print(f"❌ Global model failed: {e}")
             traceback.print_exc()
@@ -2597,6 +2865,7 @@ def pricing_mlops_pipeline(
             family_results = run_family_training(training_data_path)
             results["family"] = family_results
             print(f"✅ BindingType models completed - {len(family_results.get('created_models', []))} models")
+            print(f"   🔗 Input data DVC hash: {family_results.get('input_data_dvc_hash', 'N/A')}")
         except Exception as e:
             print(f"❌ BindingType models failed: {e}")
             traceback.print_exc()
@@ -2613,6 +2882,7 @@ def pricing_mlops_pipeline(
             couple_results = run_couple_training(training_data_path)
             results["couple"] = couple_results
             print(f"✅ Pair models completed - {len(couple_results.get('created_models', []))} models")
+            print(f"   🔗 Input data DVC hash: {couple_results.get('input_data_dvc_hash', 'N/A')}")
         except Exception as e:
             print(f"❌ Pair models failed: {e}")
             traceback.print_exc()
@@ -2682,6 +2952,8 @@ def pricing_mlops_pipeline(
                 print(f"   ✅ Production alias: v{mlflow_info.get('model_version', 'N/A')}")
             if "artifacts" in mlflow_info:
                 print(f"   📁 Artifacts: {mlflow_info['artifacts']['joblib']}")
+            if results['client_features'].get("dvc_hashes"):
+                print(f"   🔗 DVC hashes: {results['client_features']['dvc_hashes']}")
 
     # Global model summary
     if run_global and "global" in results and "error" not in results["global"]:
@@ -2693,6 +2965,8 @@ def pricing_mlops_pipeline(
             latest_version = get_latest_model_version(MLFLOW_MODEL_NAME_GLOBAL)
             print(f"   Latest version: v{latest_version if latest_version else 'N/A'}")
             print(f"   Production alias: v{prod_version if prod_version else 'N/A'}")
+        if results['global'].get("dvc_hashes"):
+            print(f"   🔗 DVC hashes: {results['global']['dvc_hashes']}")
 
     # Family summary
     if run_family and "family" in results and "error" not in results["family"]:
@@ -2700,6 +2974,8 @@ def pricing_mlops_pipeline(
         print(f"   Linear families: {results['family']['n_linear']}")
         print(f"   Nonlinear families: {results['family']['n_nonlinear']}")
         print(f"   Models created: {len(results['family'].get('created_models', []))}")
+        if results['family'].get("input_data_dvc_hash"):
+            print(f"   🔗 Input data DVC hash: {results['family']['input_data_dvc_hash']}")
 
     # Pair summary
     if run_couple and "couple" in results and "error" not in results["couple"]:
@@ -2707,6 +2983,8 @@ def pricing_mlops_pipeline(
         print(f"   Linear pairs: {results['couple']['n_linear']}")
         print(f"   Nonlinear pairs: {results['couple']['n_nonlinear']}")
         print(f"   Models created: {len(results['couple'].get('created_models', []))}")
+        if results['couple'].get("input_data_dvc_hash"):
+            print(f"   🔗 Input data DVC hash: {results['couple']['input_data_dvc_hash']}")
 
     print(f"\n📊 To view MLflow results:")
     print(f"   Open: http://localhost:5000 in your browser")
@@ -2725,7 +3003,7 @@ def pricing_mlops_pipeline(
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="Pricing MLOPS Pipeline")
+    parser = argparse.ArgumentParser(description="Pricing MLOPS Pipeline with DVC tracking")
     parser.add_argument("--mode", type=str, default="all",
                         choices=["all", "global", "family", "couple", "features"],
                         help="Execution mode")
@@ -2749,6 +3027,7 @@ if __name__ == "__main__":
     print(f"\n📌 Mode: {args.mode}")
     print(f"📌 Client Features: {'NO' if args.no_client_features else 'YES'}")
     print(f"📌 Automatic production alias configuration: {'NO' if args.no_promote else 'YES'}")
+    print(f"📌 DVC Tracking: YES")
 
     should_promote = not args.no_promote and not args.once
     run_client_features = not args.no_client_features
