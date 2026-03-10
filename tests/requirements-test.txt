@@ -1,0 +1,49 @@
+# requirements-test.txt
+pytest>=7.0.0
+pytest-cov>=4.0.0
+pytest-mock>=3.10.0
+pytest-benchmark>=4.0.0
+pandas>=1.5.0
+numpy>=1.23.0
+openpyxl>=3.1.0
+joblib>=1.2.0
+
+
+#Instructions d'utilisation
+#Installer les dépendances de test :
+
+#bash
+#pip install -r requirements-test.txt
+#Exécuter tous les tests :
+
+#bash
+#pytest tests/test_full_preprocess.py -v
+#Exécuter avec couverture de code :
+
+#bash
+#pytest tests/test_full_preprocess.py --cov=src.preprocessing.full_preprocess --cov-report=html
+#Exécuter uniquement les tests rapides (ignorer les tests lents) :
+
+#bash
+#pytest tests/test_full_preprocess.py -v -m "not slow"
+
+
+#Ces tests couvrent :
+
+#✅ Toutes les fonctions individuelles
+
+#✅ Les cas limites (DataFrames vides, valeurs manquantes, etc.)
+
+#✅ Les transformations de données
+
+#✅ Les mappings et normalisations
+
+#✅ La gestion des dates
+
+#✅ L'imputation ML
+
+#✅ L'intégration complète du pipeline
+
+#✅ La sauvegarde des résultats
+
+#✅ Les performances (optionnel)

@@ -15,7 +15,7 @@ from pathlib import Path
 import joblib
 import warnings
 from datetime import datetime
-
+import shutil
 warnings.filterwarnings("ignore", category=UserWarning)
 
 
@@ -30,6 +30,30 @@ def get_project_root() -> Path:
     return Path(__file__).resolve().parents[3]
 
 
+def safe_create_flag(df: pd.DataFrame, source_cols: list, flag_name: str) -> pd.DataFrame:
+    """
+    Crée un flag has_* de manière sécurisée.
+    Si les colonnes sources existent, le flag = 1 si au moins une non-nulle.
+    Sinon, flag = 0 avec un warning.
+    """
+    existing_cols = [col for col in source_cols if col in df.columns]
+
+    if existing_cols:
+        df[flag_name] = df[existing_cols].notna().any(axis=1).astype(int)
+        print(f"✓ Flag {flag_name} créé à partir de {existing_cols}")
+    else:
+        # Initialiser d'abord la colonne avec des 0
+        df[flag_name] = 0
+        print(f"⚠️ Colonnes {source_cols} manquantes, {flag_name} mis à 0")
+
+        # AJOUT : S'assurer que les colonnes sources manquantes existent avec des valeurs par défaut
+        for col in source_cols:
+            if col not in df.columns:
+                df[col] = 'NONE'  # ou 0 selon le type
+                print(f"   ➕ Création de la colonne {col} avec valeur par défaut")
+
+    return df
+
 # ──────────────────────────────────────────────────────────────
 # PARTIE 1 : NETTOYAGE INITIAL (sélection, flags, remplissage simple)
 # ──────────────────────────────────────────────────────────────
@@ -40,13 +64,12 @@ def initial_cleaning(df: pd.DataFrame) -> pd.DataFrame:
 
     # Sélection des colonnes pertinentes
     cols_to_keep = [
-        'author', 'binding_type', 'delivery_date', 'height',
+         'binding_type', 'height',
         'isbn10', 'isbn13', 'perf', 'production_page', 'security_label',
         'self_cover', 'shrinkwrap', 'status', 'thickness',
-        'three_hole_drill', 'title', 'unit_price', 'version', 'weight',
+        'three_hole_drill', 'unit_price', 'version', 'weight',
         'width', 'label_location', 'label_type',
         'cover_finish_type', 'text_color', 'text_paper_type',
-        'expected_date', 'reception_date',
         'priority_level', 'quantity', 'quantity_min', 'quantity_max',
         'siren', 'coil_type', 'cover_paper_type',
         'double_sided_cover', 'cover_color', 'cover_size',
@@ -54,7 +77,7 @@ def initial_cleaning(df: pd.DataFrame) -> pd.DataFrame:
         'insert_size', 'tab_page_number', 'trim_size', 'tab_color',
         'tab_lamination', 'tab_size', 'tab_paper_type',
         'case_finish_type', 'case_paper_type', 'cover_case_color',
-        'back_cover_flat_size', 'spine_type', 'tva', 'head_and_tail'
+        'back_cover_flat_size', 'spine_type', 'head_and_tail','tva','reception_date'
     ]
 
     # Garder seulement les colonnes présentes
@@ -67,26 +90,21 @@ def initial_cleaning(df: pd.DataFrame) -> pd.DataFrame:
     for col in isbn_cols:
         if col in df.columns:
             df[col] = (
-                df[col].notna() &
-                (df[col].astype(str).str.strip() != "")
+                    df[col].notna() &
+                    (df[col].astype(str).str.strip() != "")
             ).astype(int)
 
     # TVA → 0 si manquant
     if 'tva' in df.columns:
         df['tva'] = df['tva'].fillna(0)
 
-    # Flags has_*
-    insert_cols = ['insert_lamination', 'insert_paper_type', 'insert_color', 'insert_size']
-    df['has_insert'] = df[insert_cols].notna().any(axis=1).astype(int)
-
-    tab_cols = ['tab_page_number', 'tab_color', 'tab_lamination', 'tab_size', 'tab_paper_type']
-    df['has_tab'] = df[tab_cols].notna().any(axis=1).astype(int)
-
-    backcover_cols = ['case_finish_type', 'case_paper_type', 'cover_case_color', 'back_cover_flat_size', 'spine_type']
-    df['has_backcover'] = df[backcover_cols].notna().any(axis=1).astype(int)
-
-    coil_cols = ['coil_type']
-    df['has_coil'] = df[coil_cols].notna().any(axis=1).astype(int)
+    # Flags has_* (version sécurisée)
+    df = safe_create_flag(df, ['insert_lamination', 'insert_paper_type', 'insert_color', 'insert_size'], 'has_insert')
+    df = safe_create_flag(df, ['tab_page_number', 'tab_color', 'tab_lamination', 'tab_size', 'tab_paper_type'],
+                          'has_tab')
+    df = safe_create_flag(df, ['case_finish_type', 'case_paper_type', 'cover_case_color', 'back_cover_flat_size',
+                               'spine_type'], 'has_backcover')
+    df = safe_create_flag(df, ['coil_type'], 'has_coil')
 
     # Tailles numériques → -1
     sizenum_cols = ['insert_size', 'tab_size', 'back_cover_flat_size', 'trim_size']
@@ -165,10 +183,24 @@ def remove_duplicates(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def drop_constant_columns(df: pd.DataFrame) -> pd.DataFrame:
-    constants = [col for col in df.columns if df[col].nunique(dropna=False) <= 1]
-    if constants:
-        print(f"Colonnes constantes supprimées (avancé) : {constants}")
-        df = df.drop(columns=constants)
+    # Colonnes à préserver même si constantes
+    columns_to_keep = ['has_coil', 'has_insert', 'has_tab', 'has_backcover',
+                       'insert_paper_type', 'unit_price','tva']  # Ajoutez d'autres si nécessaire
+
+    # Trouver les colonnes constantes
+    all_constants = [col for col in df.columns if df[col].nunique(dropna=False) <= 1]
+
+    # Ne supprimer que celles qui ne sont pas dans la liste de préservation
+    constants_to_drop = [col for col in all_constants if col not in columns_to_keep]
+
+    if constants_to_drop:
+        print(f"Colonnes constantes supprimées (avancé) : {constants_to_drop}")
+        # Préserver les colonnes constantes importantes
+        constants_preserved = [col for col in all_constants if col in columns_to_keep]
+        if constants_preserved:
+            print(f"Colonnes constantes préservées : {constants_preserved}")
+        df = df.drop(columns=constants_to_drop)
+
     return df
 
 
@@ -181,11 +213,11 @@ def uppercase_all_string_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def normalize_column(
-    df: pd.DataFrame,
-    col: str,
-    mapping: dict | None = None,
-    default: str = "NONE",
-    replace_empty: bool = True
+        df: pd.DataFrame,
+        col: str,
+        mapping: dict | None = None,
+        default: str = "NONE",
+        replace_empty: bool = True
 ) -> pd.DataFrame:
     if col not in df.columns:
         return df
@@ -246,9 +278,9 @@ def clean_dates(df: pd.DataFrame, date_columns: list[str]) -> pd.DataFrame:
 
 
 def replace_nat_with_sentinel_date(
-    df: pd.DataFrame,
-    date_columns: list[str],
-    sentinel_date: pd.Timestamp = pd.Timestamp("9999-12-31")
+        df: pd.DataFrame,
+        date_columns: list[str],
+        sentinel_date: pd.Timestamp = pd.Timestamp("9999-12-31")
 ) -> pd.DataFrame:
     sentinel_str = sentinel_date.strftime("%d-%m-%Y")
     for col in date_columns:
@@ -272,8 +304,8 @@ def impute_cover_size_saddle_stitch(df: pd.DataFrame) -> pd.DataFrame:
         print(f"Erreur chargement modèle : {e}")
         return df
     mask_ss_to_impute = (
-        (df["binding_type"] == "SS") &
-        (df["cover_size"].isin(["NONE", "SDL", "", pd.NA, None]))
+            (df["binding_type"] == "SS") &
+            (df["cover_size"].isin(["NONE", "SDL", "", pd.NA, None]))
     )
     if not mask_ss_to_impute.any():
         print("Aucun SaddleStitch à imputer pour cover_size")
@@ -344,16 +376,29 @@ def quality_check(df: pd.DataFrame):
     print(df.describe().round(2))
 
 
-def full_preprocessing(input_file: str = "concateneRAHMA4.xlsx") -> pd.DataFrame:
+def full_preprocessing(input_path: Path) -> pd.DataFrame:
     print("=== PIPELINE COMPLET DE PRÉTRAITEMENT DÉMARRÉ ===")
 
-    # Chargement brut
-    root = get_project_root()
-    file_path = root / "data" / "raw" / input_file
-    if not file_path.exists():
-        raise FileNotFoundError(f"Fichier introuvable : {file_path}")
-    print(f"Chargement : {file_path}")
-    df = pd.read_excel(file_path, engine="openpyxl")
+    """
+     Pipeline complet de prétraitement
+
+     Args:
+         input_path: Chemin complet vers le fichier d'entrée (Excel ou CSV)
+     """
+    print("=== PIPELINE COMPLET DE PRÉTRAITEMENT DÉMARRÉ ===")
+
+    if not input_path.exists():
+        raise FileNotFoundError(f"Fichier introuvable : {input_path}")
+    print(f"Chargement : {input_path}")
+
+    # Détection automatique du format de fichier
+    if input_path.suffix.lower() in ['.xlsx', '.xls']:
+        df = pd.read_excel(input_path, engine="openpyxl")
+    elif input_path.suffix.lower() == '.csv':
+        df = pd.read_csv(input_path)
+    else:
+        raise ValueError(f"Format de fichier non supporté: {input_path.suffix}")
+
     print(f"Forme brute : {df.shape}")
 
     # Étape 1 : nettoyage initial
@@ -503,8 +548,11 @@ def save_processed(df: pd.DataFrame, filename: str = "pricing_fully_cleaned.xlsx
 
 if __name__ == "__main__":
     try:
-        df_final = full_preprocessing("concateneRAHMA4.xlsx")
+        root = get_project_root()
+        input_path = root / "data" / "consolidated" / "dataset_complet.xlsx"
+        df_final = full_preprocessing(input_path)
         save_processed(df_final, "pricing_fully_cleaned.xlsx")
+        shutil.rmtree(root / "data" / "raw" / "dumps" / "sql", ignore_errors=True)
         print("\nTraitement complet terminé avec succès !")
     except Exception as e:
         print("Erreur lors du pipeline :", str(e))

@@ -1,92 +1,45 @@
-# ===============================
 # Python
-# ===============================
 __pycache__/
 *.py[cod]
-*$py.class
 *.so
+*.egg-info/
+dist/
+build/
 
-# Environnements virtuels
-.venv/
+# Environnements
+.venv
 env/
 venv/
+.env
 
-# ===============================
-# Poetry
-# ===============================
-poetry.toml
-
-# ===============================
 # IDE
-# ===============================
 .idea/
 .vscode/
+*.swp
 
-# ===============================
-# Jupyter
-# ===============================
-.ipynb_checkpoints/
-
-# ===============================
-# Données (gérées par DVC)
-# ===============================
-data/raw/*
-data/processed/*
-!data/**/*.dvc
-
-# ===============================
-# Modèles sauvegardés localement
-# ===============================
+# Données et modèles
+data/consolidated/
+data/processed/
+data/enriched/
+data/features/
+*.xlsx
+*.csv
 models/
+*.pkl
+*.joblib
 
-# ===============================
-# MLflow tracking local
-# ===============================
+# MLflow et logs
 mlruns/
-
-# ===============================
-# CatBoost logs
-# ===============================
+mlflow.db
+*.log
 catboost_info/
 
-# ===============================
-# Logs & fichiers temporaires
-# ===============================
-*.log
-*.tmp
-.DS_Store
-
-# ===============================
-# Images générées automatiquement
-# ===============================
-pred_vs_true_*.png
-
-# ===============================
-# Docker
-# ===============================
-*.env
-
-
 # DVC
-.dvc/cache/
-.dvc/tmp/
+.dvc/tmp
+.dvc/cache
 
-
-# Données et modèles (gros fichiers)
-#data/raw/*
-#data/processed/*.xlsx
-#data/processed/*.parquet
-# Ignorer les gros fichiers binaires / données
-data/raw/*.xlsx
-data/raw/*.parquet
-data/processed/*.xlsx
-data/processed/*.parquet
-models/*.pkl
-models/*.joblib
-models/*.pickle
-
-# Mais NE PAS ignorer les fichiers .dvc (DVC les gère)
-!*.dvc
-!data/**/*.dvc
-!models/**/*.dvc
-/models
+# Temporaires
+__pycache__/
+*.pyc
+tmp/
+temp/
