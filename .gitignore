@@ -43,3 +43,4 @@ __pycache__/
 *.pyc
 tmp/
 temp/data/raw/dumps/sql/*.sql
+data/raw/dumps/sql/*.sql

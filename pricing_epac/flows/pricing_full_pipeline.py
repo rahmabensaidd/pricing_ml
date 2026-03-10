@@ -51,9 +51,6 @@ from pricing_epac.models.client_history_features import (
 )
 
 
-def sanitize_name(name: str) -> str:
-    """Cleans a name for file / MLflow registry / model usage."""
-    return re.sub(r"[^a-zA-Z0-9_]", "_", name)
 
 
 # ────────────────────────────────────────────────
@@ -1947,7 +1944,6 @@ def run_family_training(cleaned_file: Path) -> Dict[str, Any]:
             "input_data_dvc_hash": input_dvc_hash
         }
 
-
 @task(name="Training by Pair (BindingType × SIREN)")
 def run_couple_training(cleaned_file: Path) -> Dict[str, Any]:
     """Trains models by pair (binding_type × siren) with MLflow versioning and DVC hash tracking"""
@@ -2015,16 +2011,22 @@ def run_couple_training(cleaned_file: Path) -> Dict[str, Any]:
                     "summary": {"linear_pairs": [], "nonlinear_pairs": []}
                 }
 
-            # Adapt results structure
+            # Adapt results structure - CORRECTION ICI
             linear_results = []
             nonlinear_results = []
+            created_models_from_training = []
 
             if isinstance(results, dict):
                 linear_results = results.get('linear', [])
                 nonlinear_results = results.get('nonlinear', [])
+                created_models_from_training = results.get('created_models', [])
             elif isinstance(results, tuple) and len(results) >= 2:
                 linear_results = results[0] if results[0] else []
                 nonlinear_results = results[1] if results[1] else []
+
+            print(f"\n   📊 Linear results count: {len(linear_results)}")
+            print(f"   📊 Nonlinear results count: {len(nonlinear_results)}")
+            print(f"   📊 Created models from training: {len(created_models_from_training)}")
 
             # Create comparison tables for pairs
             print(f"\n   📊 Creating comparison tables...")
@@ -2034,7 +2036,7 @@ def run_couple_training(cleaned_file: Path) -> Dict[str, Any]:
             for lin in linear_results:
                 if isinstance(lin, dict):
                     linear_comparison_data.append({
-                        "Pair": lin.get("family", lin.get("safe_couple", "Unknown")),
+                        "Pair": lin.get("group", "Unknown"),
                         "Best model": lin.get("best_model", "Unknown"),
                         "CV R²": round(lin.get("cv_r2", 0), 4),
                         "N samples": lin.get("n_samples", 0),
@@ -2056,9 +2058,9 @@ def run_couple_training(cleaned_file: Path) -> Dict[str, Any]:
             for nl in nonlinear_results:
                 if isinstance(nl, dict):
                     nonlinear_comparison_data.append({
-                        "Pair": nl.get("family", nl.get("safe_couple", "Unknown")),
+                        "Pair": nl.get("group", "Unknown"),
                         "Best model": nl.get("best_model", "Unknown"),
-                        "R²": round(nl.get("r2", 0), 4),
+                        "R²": round(nl.get("r2_test", nl.get("r2", 0)), 4),
                         "N samples": nl.get("n_samples", 0),
                         "SHAP": "✅" if nl.get("shap_success") else "❌"
                     })
@@ -2081,394 +2083,278 @@ def run_couple_training(cleaned_file: Path) -> Dict[str, Any]:
             })
 
             # ============================================
-            # PROCESS LINEAR MODELS
+            # PROCESS LINEAR MODELS - CORRECTION ICI
             # ============================================
             print(f"\n   📊 Processing {len(linear_results)} linear pairs...")
 
             for idx, lin in enumerate(linear_results):
                 try:
-                    # Get pair information
-                    if isinstance(lin, dict):
-                        pair = lin.get("family", lin.get("safe_couple", f"pair_linear_{idx}"))
-                        # Try to extract binding_type and siren if available
-                        binding_type = lin.get("binding_type", "")
-                        siren = lin.get("siren", "")
+                    if not isinstance(lin, dict):
+                        continue
+
+                    # Get group name (format: "binding_type__siren")
+                    group = lin.get("group", "")
+                    if not group:
+                        print(f"   ⚠️ No group found for linear model {idx}")
+                        continue
+
+                    # Extraire binding_type et siren du group
+                    if '__' in group:
+                        parts = group.split('__')
+                        binding_type = parts[0] if len(parts) > 0 else ""
+                        siren = parts[1] if len(parts) > 1 else ""
                     else:
-                        pair = f"pair_linear_{idx}"
-                        binding_type = ""
+                        binding_type = group
                         siren = ""
 
-                    safe_pair = sanitize_name(pair)
+                    # Créer le nom au format souhaité
+                    if siren:
+                        model_name = f"PricingModel_{binding_type}__{siren}_Linear"
+                    else:
+                        model_name = f"PricingModel_{binding_type}_Linear"
 
-                    # Log metrics for this pair
-                    mlflow.log_metrics({
-                        f"{safe_pair}_linear_cv_r2": float(lin.get("cv_r2", 0)) if isinstance(lin, dict) else 0,
-                        f"{safe_pair}_linear_n_samples": int(lin.get("n_samples", 0)) if isinstance(lin, dict) else 0,
-                    })
+                    print(f"   📦 Model name: {model_name}")
 
-                    if isinstance(lin, dict) and lin.get("best_model"):
-                        mlflow.set_tag(f"{safe_pair}_linear_model_type", str(lin["best_model"]))
+                    # Récupérer le pipeline
+                    pipeline = lin.get("pipeline")
+                    if pipeline is None:
+                        print(f"   ⚠️ No pipeline found for {group}")
+                        continue
 
-                    # Look for pipeline file
-                    pipeline_file = None
-                    if isinstance(lin, dict) and "pipeline_file" in lin:
-                        pipeline_file = Path(lin["pipeline_file"])
+                    # Extraire les métriques
+                    cv_r2 = float(lin.get("cv_r2", 0))
+                    n_samples = int(lin.get("n_samples", 0))
+                    best_model = str(lin.get("best_model", "linear_model"))
+                    formula = lin.get("formula")
 
-                    if not pipeline_file or not pipeline_file.exists():
-                        possible_files = list(tmp_path.glob(f"*{safe_pair}*linear*.joblib"))
-                        if possible_files:
-                            pipeline_file = possible_files[0]
-                        else:
-                            possible_files = list(tmp_path.glob(f"*linear*.joblib"))
-                            if idx < len(possible_files):
-                                pipeline_file = possible_files[idx]
+                    # Model metadata
+                    model_metadata = {
+                        "group": group,
+                        "binding_type": binding_type,
+                        "siren": siren,
+                        "cv_r2": cv_r2,
+                        "n_samples": n_samples,
+                        "best_model": best_model,
+                        "model_type": "linear",
+                        "run_id": run.info.run_id,
+                        "run_name": run_name,
+                        "input_data_dvc_hash": input_dvc_hash
+                    }
 
-                    if pipeline_file and pipeline_file.exists():
-                        print(f"   📦 Loading pipeline: {pipeline_file.name}")
+                    if formula:
+                        model_metadata["formula"] = formula
 
-                        # Load pipeline
-                        with open(pipeline_file, 'rb') as f:
-                            pipeline = load(f)
+                    # Sauvegarder le pipeline temporairement
+                    pipeline_file = tmp_path / f"{group}_linear_pipeline.joblib"
+                    dump(pipeline, pipeline_file)
 
-                        # Extract metrics
-                        cv_r2 = float(lin.get("cv_r2", 0)) if isinstance(lin, dict) else 0
-                        n_samples = int(lin.get("n_samples", 0)) if isinstance(lin, dict) else 0
-                        best_model = str(lin.get("best_model", "linear_model")) if isinstance(lin,
-                                                                                              dict) else "linear_model"
+                    # Register in MLflow
+                    model_info = mlflow.sklearn.log_model(
+                        sk_model=pipeline,
+                        artifact_path=model_name,
+                        signature=None,
+                        registered_model_name=model_name,
+                        metadata=model_metadata
+                    )
 
-                        # Model metadata
-                        model_metadata = {
-                            "pair": pair,
-                            "binding_type": binding_type,
-                            "siren": siren,
-                            "cv_r2": cv_r2,
-                            "n_samples": n_samples,
-                            "best_model": best_model,
-                            "model_type": "linear",
-                            "run_id": run.info.run_id,
-                            "run_name": run_name,
-                            "input_data_dvc_hash": input_dvc_hash
-                        }
+                    version = getattr(model_info, 'registered_model_version', None)
 
-                        # Save metrics
-                        metrics_path = tmp_path / f"{safe_pair}_linear_metrics.json"
-                        with open(metrics_path, "w") as f:
-                            json.dump(model_metadata, f, indent=2)
-                        mlflow.log_artifact(str(metrics_path), f"pairs/{safe_pair}/linear")
-
-                        # Save formula if available
-                        formula = lin.get("formula") if isinstance(lin, dict) else None
-                        if formula:
-                            formula_path = tmp_path / f"{safe_pair}_formula.txt"
-                            with open(formula_path, "w") as f:
-                                f.write(formula)
-                            mlflow.log_artifact(str(formula_path), f"pairs/{safe_pair}/linear")
-
-                        # Create local comparison table for this pair
-                        pair_comparison = []
-                        if isinstance(lin, dict) and "all_models" in lin:
-                            for model_result in lin["all_models"]:
-                                pair_comparison.append({
-                                    "Model": model_result.get("name", "Unknown"),
-                                    "RMSE": round(model_result.get("rmse", 0), 4),
-                                    "R²": round(model_result.get("r2", 0), 4),
-                                    "MAE": round(model_result.get("mae", 0), 4),
-                                    "CV R²": round(model_result.get("cv_r2", 0), 4) if "cv_r2" in model_result else None
-                                })
-
-                        if pair_comparison:
-                            pair_df = pd.DataFrame(pair_comparison)
-                            pair_df = pair_df.sort_values("RMSE").reset_index(drop=True)
-                            pair_df.insert(0, "Rank", range(1, len(pair_df) + 1))
-
-                            pair_csv_path = tmp_path / f"{safe_pair}_linear_comparison.csv"
-                            pair_df.to_csv(pair_csv_path, index=False)
-                            mlflow.log_artifact(str(pair_csv_path), f"pairs/{safe_pair}/linear")
-
-                            model_metadata["comparison_table"] = f"{safe_pair}_linear_comparison.csv"
-
-                        # Model name with double underscore
-                        model_name = f"PricingModel_{safe_pair}_Linear"
-
-                        # Register in MLflow
-                        model_info = mlflow.sklearn.log_model(
-                            sk_model=pipeline,
-                            artifact_path=model_name,
-                            signature=None,
-                            registered_model_name=model_name,
-                            metadata=model_metadata
+                    if version:
+                        # Save DVC hash tracking file
+                        dvc_tracking_file = save_dvc_hash_tracking(
+                            model_name,
+                            int(version),
+                            [pipeline_file],
+                            DVC_TRACKING_DIR
                         )
 
-                        version = getattr(model_info, 'registered_model_version', None)
+                        # Tags
+                        initial_tags = {
+                            TAG_LIFECYCLE_STATUS: "new",
+                            TAG_TRAINING_DATE: datetime.now().isoformat(),
+                            TAG_GIT_COMMIT: get_git_commit_hash(),
+                            TAG_MODEL_TYPE: "linear",
+                            TAG_FAMILY: group,
+                            TAG_BEST_MODEL: best_model,
+                            TAG_PERFORMANCE_R2: str(cv_r2),
+                            TAG_RUN_ID: run.info.run_id,
+                            TAG_RUN_NAME: run_name,
+                            TAG_DVC_TRACKED: "true",
+                            "linear_formula": formula[:500] if formula else "",
+                            "input_data_dvc_hash": input_dvc_hash,
+                            "dvc_tracking_file": str(dvc_tracking_file)
+                        }
 
-                        if version:
-                            # Save DVC hash tracking file
-                            dvc_tracking_file = save_dvc_hash_tracking(
-                                model_name,
-                                int(version),
-                                [pipeline_file],
-                                DVC_TRACKING_DIR
-                            )
+                        if binding_type:
+                            initial_tags["binding_type"] = binding_type
+                        if siren:
+                            initial_tags["siren"] = siren
 
-                            # Tags with formula
-                            initial_tags = {
-                                TAG_LIFECYCLE_STATUS: "new",
-                                TAG_TRAINING_DATE: datetime.now().isoformat(),
-                                TAG_GIT_COMMIT: get_git_commit_hash(),
-                                TAG_MODEL_TYPE: "linear",
-                                TAG_FAMILY: pair,
-                                TAG_BEST_MODEL: best_model,
-                                TAG_PERFORMANCE_R2: str(cv_r2),
-                                TAG_RUN_ID: run.info.run_id,
-                                TAG_RUN_NAME: run_name,
-                                TAG_DVC_TRACKED: "true",
-                                # ADD: Add formula to tags
-                                "linear_formula": formula[:500] if formula else "",
-                                "input_data_dvc_hash": input_dvc_hash,
-                                "dvc_tracking_file": str(dvc_tracking_file)
-                            }
+                        set_model_version_tags(model_name, int(version), initial_tags)
 
-                            # Add binding_type and siren as separate tags if available
-                            if binding_type:
-                                initial_tags["binding_type"] = binding_type
-                            if siren:
-                                initial_tags["siren"] = siren
-
-                            set_model_version_tags(model_name, int(version), initial_tags)
-
-                            # Log comparison artifacts in the main run
-                            if pair_comparison:
-                                with tempfile.TemporaryDirectory() as model_tmp:
-                                    model_tmp_path = Path(model_tmp)
-                                    comp_path = model_tmp_path / f"{safe_pair}_linear_comparison.csv"
-                                    pair_df.to_csv(comp_path, index=False)
-
-                                    client = MlflowClient()
-                                    client.log_artifact(run.info.run_id, str(comp_path),
-                                                        f"artifacts/{model_name}/comparisons")
-
-                            # Add to created models list
-                            created_models.append({
-                                "model_name": model_name,
-                                "version": int(version),
-                                "pair": pair,
-                                "binding_type": binding_type,
-                                "siren": siren,
-                                "safe_pair": safe_pair,
-                                "type": "linear",
-                                "metrics": {
-                                    "r2": cv_r2,
-                                    "n_samples": n_samples
-                                },
-                                "comparison_table": f"{safe_pair}_linear_comparison.csv" if pair_comparison else None,
-                                "run_id": run.info.run_id,
-                                "run_name": run_name,
-                                "formula": formula,  # ADD: Store formula
-                                "dvc_tracking_file": str(dvc_tracking_file)
-                            })
-                            print(f"   ✅ Pair {pair[:50]}... (linear) versioned: {model_name} v{version}")
-                    else:
-                        print(f"   ⚠️ Pipeline not found for {pair}")
+                        # Add to created models list
+                        created_models.append({
+                            "model_name": model_name,
+                            "version": int(version),
+                            "group": group,
+                            "binding_type": binding_type,
+                            "siren": siren,
+                            "type": "linear",
+                            "metrics": {
+                                "r2": cv_r2,
+                                "n_samples": n_samples
+                            },
+                            "run_id": run.info.run_id,
+                            "run_name": run_name,
+                            "formula": formula,
+                            "dvc_tracking_file": str(dvc_tracking_file)
+                        })
+                        print(f"   ✅ Pair {group} (linear) versioned: {model_name} v{version}")
 
                 except Exception as e:
                     print(f"   ⚠️ Error processing linear model {idx}: {e}")
                     traceback.print_exc()
 
             # ============================================
-            # PROCESS NONLINEAR MODELS
+            # PROCESS NONLINEAR MODELS - CORRECTION ICI
             # ============================================
             print(f"\n   📊 Processing {len(nonlinear_results)} nonlinear pairs...")
 
             for idx, nl in enumerate(nonlinear_results):
                 try:
-                    # Get pair information
-                    if isinstance(nl, dict):
-                        pair = nl.get("family", nl.get("safe_couple", f"pair_nonlinear_{idx}"))
-                        binding_type = nl.get("binding_type", "")
-                        siren = nl.get("siren", "")
+                    if not isinstance(nl, dict):
+                        continue
+
+                    # Get group name (format: "binding_type__siren")
+                    group = nl.get("group", "")
+                    if not group:
+                        print(f"   ⚠️ No group found for nonlinear model {idx}")
+                        continue
+
+                    # Extraire binding_type et siren du group
+                    if '__' in group:
+                        parts = group.split('__')
+                        binding_type = parts[0] if len(parts) > 0 else ""
+                        siren = parts[1] if len(parts) > 1 else ""
                     else:
-                        pair = f"pair_nonlinear_{idx}"
-                        binding_type = ""
+                        binding_type = group
                         siren = ""
 
-                    safe_pair = sanitize_name(pair)
+                    # Créer le nom au format souhaité
+                    if siren:
+                        model_name = f"PricingModel_{binding_type}__{siren}_NonLinear"
+                    else:
+                        model_name = f"PricingModel_{binding_type}_NonLinear"
 
-                    # Log metrics for this pair
-                    r2 = float(nl.get("r2", 0)) if isinstance(nl, dict) else 0
-                    n_samples = int(nl.get("n_samples", 0)) if isinstance(nl, dict) else 0
-                    shap_success = nl.get("shap_success", False) if isinstance(nl, dict) else False
-                    best_model = str(nl.get("best_model", "nonlinear_model")) if isinstance(nl,
-                                                                                            dict) else "nonlinear_model"
+                    print(f"   📦 Model name: {model_name}")
 
-                    mlflow.log_metrics({
-                        f"{safe_pair}_nonlinear_r2": r2,
-                        f"{safe_pair}_nonlinear_n_samples": n_samples,
-                        f"{safe_pair}_nonlinear_shap_success": 1 if shap_success else 0
-                    })
+                    # Récupérer le pipeline
+                    pipeline = nl.get("pipeline")
+                    if pipeline is None:
+                        print(f"   ⚠️ No pipeline found for {group}")
+                        continue
 
-                    if isinstance(nl, dict) and nl.get("best_model"):
-                        mlflow.set_tag(f"{safe_pair}_nonlinear_model_type", str(nl["best_model"]))
+                    # Extraire les métriques
+                    r2 = float(nl.get("r2_test", nl.get("r2", 0)))
+                    n_samples = int(nl.get("n_samples", 0))
+                    best_model = str(nl.get("best_model", "nonlinear_model"))
+                    shap_success = nl.get("shap_success", False)
+                    feature_importance = nl.get("feature_importance")
 
-                    # Look for pipeline file
-                    pipeline_file = None
-                    if isinstance(nl, dict) and "pipeline_file" in nl:
-                        pipeline_file = Path(nl["pipeline_file"])
+                    # Model metadata
+                    model_metadata = {
+                        "group": group,
+                        "binding_type": binding_type,
+                        "siren": siren,
+                        "r2_test": r2,
+                        "n_samples": n_samples,
+                        "best_model": best_model,
+                        "shap_success": shap_success,
+                        "model_type": "nonlinear",
+                        "run_id": run.info.run_id,
+                        "run_name": run_name,
+                        "input_data_dvc_hash": input_dvc_hash
+                    }
 
-                    if not pipeline_file or not pipeline_file.exists():
-                        possible_files = list(tmp_path.glob(f"*{safe_pair}*nonlinear*.joblib"))
-                        if possible_files:
-                            pipeline_file = possible_files[0]
-                        else:
-                            possible_files = list(tmp_path.glob(f"*nonlinear*.joblib"))
-                            if idx < len(possible_files):
-                                pipeline_file = possible_files[idx]
+                    if feature_importance:
+                        model_metadata["feature_importance"] = feature_importance
 
-                    if pipeline_file and pipeline_file.exists():
-                        print(f"   📦 Loading pipeline: {pipeline_file.name}")
+                    # Sauvegarder le pipeline temporairement
+                    pipeline_file = tmp_path / f"{group}_nonlinear_pipeline.joblib"
+                    dump(pipeline, pipeline_file)
 
-                        with open(pipeline_file, 'rb') as f:
-                            pipeline = load(f)
+                    # Prepare feature importance for tags
+                    feature_importance_json = None
+                    if feature_importance:
+                        limited_fi = dict(list(feature_importance.items())[:50])
+                        feature_importance_json = json.dumps(limited_fi)
 
-                        # Metadata
-                        model_metadata = {
-                            "pair": pair,
-                            "binding_type": binding_type,
-                            "siren": siren,
-                            "r2": r2,
-                            "n_samples": n_samples,
-                            "best_model": best_model,
-                            "shap_success": 1 if shap_success else 0,
-                            "model_type": "nonlinear",
-                            "run_id": run.info.run_id,
-                            "run_name": run_name,
-                            "input_data_dvc_hash": input_dvc_hash
-                        }
+                    # Register in MLflow
+                    model_info = mlflow.sklearn.log_model(
+                        sk_model=pipeline,
+                        artifact_path=model_name,
+                        signature=None,
+                        registered_model_name=model_name,
+                        metadata=model_metadata
+                    )
 
-                        # Save metrics
-                        metrics_path = tmp_path / f"{safe_pair}_nonlinear_metrics.json"
-                        with open(metrics_path, "w") as f:
-                            json.dump(model_metadata, f, indent=2)
-                        mlflow.log_artifact(str(metrics_path), f"pairs/{safe_pair}/nonlinear")
+                    version = getattr(model_info, 'registered_model_version', None)
 
-                        # Save feature importance if available
-                        feature_importance_json = None
-                        if isinstance(nl, dict) and nl.get("feature_importance"):
-                            fi_path = tmp_path / f"{safe_pair}_feature_importance.json"
-                            fi_serializable = {k: float(v) for k, v in nl["feature_importance"].items()}
-                            with open(fi_path, "w") as f:
-                                json.dump(fi_serializable, f, indent=2)
-                            mlflow.log_artifact(str(fi_path), f"pairs/{safe_pair}/nonlinear")
-
-                            # Prepare for tags (limited to 50 features)
-                            limited_fi = dict(list(nl["feature_importance"].items())[:50])
-                            feature_importance_json = json.dumps(limited_fi)
-
-                        # Create local comparison table for this pair
-                        pair_comparison = []
-                        if isinstance(nl, dict) and "all_models" in nl:
-                            for model_result in nl["all_models"]:
-                                pair_comparison.append({
-                                    "Model": model_result.get("name", "Unknown"),
-                                    "RMSE": round(model_result.get("rmse", 0), 4),
-                                    "R²": round(model_result.get("r2", 0), 4),
-                                    "MAE": round(model_result.get("mae", 0), 4),
-                                })
-
-                        if pair_comparison:
-                            pair_df = pd.DataFrame(pair_comparison)
-                            pair_df = pair_df.sort_values("RMSE").reset_index(drop=True)
-                            pair_df.insert(0, "Rank", range(1, len(pair_df) + 1))
-
-                            pair_csv_path = tmp_path / f"{safe_pair}_nonlinear_comparison.csv"
-                            pair_df.to_csv(pair_csv_path, index=False)
-                            mlflow.log_artifact(str(pair_csv_path), f"pairs/{safe_pair}/nonlinear")
-
-                            model_metadata["comparison_table"] = f"{safe_pair}_nonlinear_comparison.csv"
-
-                        # Model name with double underscore
-                        model_name = f"PricingModel_{safe_pair}_NonLinear"
-
-                        model_info = mlflow.sklearn.log_model(
-                            sk_model=pipeline,
-                            artifact_path=model_name,
-                            signature=None,
-                            registered_model_name=model_name,
-                            metadata=model_metadata
+                    if version:
+                        # Save DVC hash tracking file
+                        dvc_tracking_file = save_dvc_hash_tracking(
+                            model_name,
+                            int(version),
+                            [pipeline_file],
+                            DVC_TRACKING_DIR
                         )
 
-                        version = getattr(model_info, 'registered_model_version', None)
+                        # Tags
+                        initial_tags = {
+                            TAG_LIFECYCLE_STATUS: "new",
+                            TAG_TRAINING_DATE: datetime.now().isoformat(),
+                            TAG_GIT_COMMIT: get_git_commit_hash(),
+                            TAG_MODEL_TYPE: "nonlinear",
+                            TAG_FAMILY: group,
+                            TAG_BEST_MODEL: best_model,
+                            TAG_PERFORMANCE_R2: str(r2),
+                            TAG_RUN_ID: run.info.run_id,
+                            TAG_RUN_NAME: run_name,
+                            TAG_DVC_TRACKED: "true",
+                            "shap_success": str(shap_success),
+                            "input_data_dvc_hash": input_dvc_hash,
+                            "dvc_tracking_file": str(dvc_tracking_file)
+                        }
 
-                        if version:
-                            # Save DVC hash tracking file
-                            dvc_tracking_file = save_dvc_hash_tracking(
-                                model_name,
-                                int(version),
-                                [pipeline_file],
-                                DVC_TRACKING_DIR
-                            )
+                        if binding_type:
+                            initial_tags["binding_type"] = binding_type
+                        if siren:
+                            initial_tags["siren"] = siren
 
-                            initial_tags = {
-                                TAG_LIFECYCLE_STATUS: "new",
-                                TAG_TRAINING_DATE: datetime.now().isoformat(),
-                                TAG_GIT_COMMIT: get_git_commit_hash(),
-                                TAG_MODEL_TYPE: "nonlinear",
-                                TAG_FAMILY: pair,
-                                TAG_BEST_MODEL: best_model,
-                                TAG_PERFORMANCE_R2: str(r2),
-                                TAG_RUN_ID: run.info.run_id,
-                                TAG_RUN_NAME: run_name,
-                                TAG_DVC_TRACKED: "true",
-                                # ADD: Add SHAP and feature importance tags
-                                "shap_success": str(shap_success),
-                                "input_data_dvc_hash": input_dvc_hash,
-                                "dvc_tracking_file": str(dvc_tracking_file)
-                            }
+                        if feature_importance_json:
+                            initial_tags["feature_importance"] = feature_importance_json
 
-                            # ADD: Add binding_type and siren as separate tags
-                            if binding_type:
-                                initial_tags["binding_type"] = binding_type
-                            if siren:
-                                initial_tags["siren"] = siren
+                        set_model_version_tags(model_name, int(version), initial_tags)
 
-                            # ADD: Add feature_importance if available
-                            if feature_importance_json:
-                                initial_tags["feature_importance"] = feature_importance_json
-
-                            set_model_version_tags(model_name, int(version), initial_tags)
-
-                            # Log comparison artifacts
-                            if pair_comparison:
-                                with tempfile.TemporaryDirectory() as model_tmp:
-                                    model_tmp_path = Path(model_tmp)
-                                    comp_path = model_tmp_path / f"{safe_pair}_nonlinear_comparison.csv"
-                                    pair_df.to_csv(comp_path, index=False)
-
-                                    client = MlflowClient()
-                                    client.log_artifact(run.info.run_id, str(comp_path),
-                                                        f"artifacts/{model_name}/comparisons")
-
-                            created_models.append({
-                                "model_name": model_name,
-                                "version": int(version),
-                                "pair": pair,
-                                "binding_type": binding_type,
-                                "siren": siren,
-                                "safe_pair": safe_pair,
-                                "type": "nonlinear",
-                                "metrics": {
-                                    "r2": r2,
-                                    "n_samples": n_samples
-                                },
-                                "comparison_table": f"{safe_pair}_nonlinear_comparison.csv" if pair_comparison else None,
-                                "run_id": run.info.run_id,
-                                "run_name": run_name,
-                                "shap_success": shap_success,  # ADD
-                                "feature_importance": nl.get("feature_importance") if isinstance(nl, dict) else None,
-                                "dvc_tracking_file": str(dvc_tracking_file)  # ADD
-                            })
-                            print(f"   ✅ Pair {pair[:50]}... (nonlinear) versioned: {model_name} v{version}")
-                    else:
-                        print(f"   ⚠️ Pipeline not found for {pair}")
+                        # Add to created models list
+                        created_models.append({
+                            "model_name": model_name,
+                            "version": int(version),
+                            "group": group,
+                            "binding_type": binding_type,
+                            "siren": siren,
+                            "type": "nonlinear",
+                            "metrics": {
+                                "r2": r2,
+                                "n_samples": n_samples
+                            },
+                            "run_id": run.info.run_id,
+                            "run_name": run_name,
+                            "shap_success": shap_success,
+                            "feature_importance": feature_importance,
+                            "dvc_tracking_file": str(dvc_tracking_file)
+                        })
+                        print(f"   ✅ Pair {group} (nonlinear) versioned: {model_name} v{version}")
 
                 except Exception as e:
                     print(f"   ⚠️ Error processing nonlinear model {idx}: {e}")
@@ -2484,46 +2370,36 @@ def run_couple_training(cleaned_file: Path) -> Dict[str, Any]:
                 "input_data_dvc_hash": input_dvc_hash,
                 "linear_pairs": [
                     {
-                        "pair": lin.get("family", lin.get("safe_couple", f"pair_{i}")) if isinstance(lin,
-                                                                                                     dict) else f"pair_{i}",
-                        "binding_type": lin.get("binding_type", "") if isinstance(lin, dict) else "",
-                        "siren": lin.get("siren", "") if isinstance(lin, dict) else "",
-                        "best_model": lin.get("best_model", "unknown") if isinstance(lin, dict) else "unknown",
-                        "cv_r2": float(lin.get("cv_r2", 0)) if isinstance(lin, dict) else 0,
-                        "n_samples": int(lin.get("n_samples", 0)) if isinstance(lin, dict) else 0,
-                        "model_name": f"PricingModel_{sanitize_name(lin.get('family', lin.get('safe_couple', f'pair_{i}')) if isinstance(lin, dict) else f'pair_{i}')}_Linear",
+                        "group": lin.get("group", f"pair_{i}"),
+                        "binding_type": lin.get("binding_type", ""),
+                        "siren": lin.get("siren", ""),
+                        "best_model": lin.get("best_model", "unknown"),
+                        "cv_r2": float(lin.get("cv_r2", 0)),
+                        "n_samples": int(lin.get("n_samples", 0)),
+                        "model_name": f"PricingModel_{lin.get('binding_type', '')}__{lin.get('siren', '')}_Linear" if lin.get('binding_type') and lin.get('siren') else f"PricingModel_{lin.get('group', f'pair_{i}')}_Linear",
                         "version": next((m["version"] for m in created_models if
-                                         m.get("safe_pair") == sanitize_name(
-                                             lin.get("family", lin.get("safe_couple", "")) if isinstance(lin,
-                                                                                                         dict) else "") and
+                                         m.get("group") == lin.get("group") and
                                          m["type"] == "linear"), None),
                         "formula": next((m.get("formula") for m in created_models if
-                                         m.get("safe_pair") == sanitize_name(
-                                             lin.get("family", lin.get("safe_couple", "")) if isinstance(lin,
-                                                                                                         dict) else "") and
+                                         m.get("group") == lin.get("group") and
                                          m["type"] == "linear"), None)
                     }
                     for i, lin in enumerate(linear_results) if isinstance(lin, dict)
                 ],
                 "nonlinear_pairs": [
                     {
-                        "pair": nl.get("family", nl.get("safe_couple", f"pair_{i}")) if isinstance(nl,
-                                                                                                   dict) else f"pair_{i}",
-                        "binding_type": nl.get("binding_type", "") if isinstance(nl, dict) else "",
-                        "siren": nl.get("siren", "") if isinstance(nl, dict) else "",
-                        "best_model": nl.get("best_model", "unknown") if isinstance(nl, dict) else "unknown",
-                        "r2": float(nl.get("r2", 0)) if isinstance(nl, dict) else 0,
-                        "n_samples": int(nl.get("n_samples", 0)) if isinstance(nl, dict) else 0,
-                        "model_name": f"PricingModel_{sanitize_name(nl.get('family', nl.get('safe_couple', f'pair_{i}')) if isinstance(nl, dict) else f'pair_{i}')}_NonLinear",
+                        "group": nl.get("group", f"pair_{i}"),
+                        "binding_type": nl.get("binding_type", ""),
+                        "siren": nl.get("siren", ""),
+                        "best_model": nl.get("best_model", "unknown"),
+                        "r2": float(nl.get("r2_test", nl.get("r2", 0))),
+                        "n_samples": int(nl.get("n_samples", 0)),
+                        "model_name": f"PricingModel_{nl.get('binding_type', '')}__{nl.get('siren', '')}_NonLinear" if nl.get('binding_type') and nl.get('siren') else f"PricingModel_{nl.get('group', f'pair_{i}')}_NonLinear",
                         "version": next((m["version"] for m in created_models if
-                                         m.get("safe_pair") == sanitize_name(
-                                             nl.get("family", nl.get("safe_couple", "")) if isinstance(nl,
-                                                                                                       dict) else "") and
+                                         m.get("group") == nl.get("group") and
                                          m["type"] == "nonlinear"), None),
                         "shap_success": next((m.get("shap_success") for m in created_models if
-                                              m.get("safe_pair") == sanitize_name(
-                                                  nl.get("family", nl.get("safe_couple", "")) if isinstance(nl,
-                                                                                                            dict) else "") and
+                                              m.get("group") == nl.get("group") and
                                               m["type"] == "nonlinear"), False)
                     }
                     for i, nl in enumerate(nonlinear_results) if isinstance(nl, dict)
@@ -2547,17 +2423,16 @@ def run_couple_training(cleaned_file: Path) -> Dict[str, Any]:
             "run_id": run.info.run_id,
             "experiment_id": run.info.experiment_id,
             "linear_pairs": [
-                lin.get("family", lin.get("safe_couple", f"pair_{i}")) if isinstance(lin, dict) else f"pair_{i}" for
+                lin.get("group", f"pair_{i}") if isinstance(lin, dict) else f"pair_{i}" for
                 i, lin in enumerate(linear_results)],
             "nonlinear_pairs": [
-                nl.get("family", nl.get("safe_couple", f"pair_{i}")) if isinstance(nl, dict) else f"pair_{i}" for
+                nl.get("group", f"pair_{i}") if isinstance(nl, dict) else f"pair_{i}" for
                 i, nl in enumerate(nonlinear_results)],
             "created_models": created_models,
             "run_name": run_name,
             "summary": summary,
             "input_data_dvc_hash": input_dvc_hash
         }
-
 
 # ────────────────────────────────────────────────
 # Model promotion (WITH CLIENT FEATURES IN PRODUCTION)
