@@ -42,4 +42,4 @@ catboost_info/
 __pycache__/
 *.pyc
 tmp/
-temp/
+temp/data/raw/dumps/sql/*.sql
