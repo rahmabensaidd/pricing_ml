@@ -1,3 +1,8 @@
+import os
+import sys
+# Ajouter le chemin racine pour trouver openssl_patch
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+from pricing_epac import openssl_patch  # ← IMPORT DU PATCH CENTRAL
 from pathlib import Path
 from prefect import flow, task
 import subprocess
@@ -36,10 +41,19 @@ from pricing_epac.models.train_and_compare import train_and_compare
 from pricing_epac.models.train_by_family_bindingtype import train_by_bindingtype_regularized as train_by_bindingtype
 from pricing_epac.models.train_by_family_bindingtypeandsiren import train_by_bindingtype_siren
 import re
-import os
+
 import platform
 from mlflow.models.signature import ModelSignature
+# Configuration pour MinIO (S3 compatible)
+import warnings
 
+# Désactiver pyOpenSSL dans urllib3 (même s'il n'est pas installé)
+os.environ['URLLIB3_USE_PYOPENSSL'] = '0'
+warnings.filterwarnings('ignore', module='urllib3.contrib.pyopenssl')
+os.environ['AWS_ACCESS_KEY_ID'] = 'minio_admin'
+os.environ['AWS_SECRET_ACCESS_KEY'] = 'minio_password'
+os.environ['MLFLOW_S3_ENDPOINT_URL'] = 'http://localhost:9000'  # URL de MinIO
+os.environ['AWS_DEFAULT_REGION'] = 'us-east-1'  # Nécessaire pour boto3
 # ────────────────────────────────────────────────
 # Configuration for client features
 # ────────────────────────────────────────────────
@@ -152,7 +166,7 @@ ENRICHED_DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
 CLIENT_FEATURES_FILE.parent.mkdir(parents=True, exist_ok=True)
 
 # MLflow configuration to use server
-MLFLOW_TRACKING_URI = "http://127.0.0.1:5000"
+MLFLOW_TRACKING_URI = "http://localhost:5000"
 mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
 
 print(f"\n🔍 MLflow Tracking URI: {mlflow.get_tracking_uri()}")
