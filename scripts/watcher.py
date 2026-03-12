@@ -11,6 +11,9 @@ import os
 import json
 from datetime import datetime
 import signal
+import threading
+import queue
+import shutil
 
 logging.basicConfig(
     level=logging.INFO,
@@ -20,15 +23,18 @@ logging.basicConfig(
 )
 
 if sys.platform == 'win32':
-    sys.stdout.reconfigure(encoding='utf-8')
-    sys.stderr.reconfigure(encoding='utf-8')
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
+    except:
+        pass
 
 logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SQL_FOLDER = PROJECT_ROOT / "data" / "raw" / "dumps" / "sql"
+PROCESSED_FOLDER = PROJECT_ROOT / "data" / "raw" / "dumps" / "processed"
 PID_FILE = PROJECT_ROOT / "data" / "watcher.pid"
-MODE_FILE = PROJECT_ROOT / "data" / "watcher_mode.txt"
 LOG_FILE = PROJECT_ROOT / "data" / "pipeline_output.log"
 RESULTS_DIR = PROJECT_ROOT / "data" / "pipeline_results"
 
@@ -36,13 +42,43 @@ RESULTS_DIR = PROJECT_ROOT / "data" / "pipeline_results"
 class SQLFileHandler(FileSystemEventHandler):
     def __init__(self, mode="all"):
         self.processing = False
-        self.pending_files = set()
+        self.pending_queue = queue.Queue()
         self.last_trigger = time.time()
-        self.mode = mode
-        self.last_results = {}
+        self.mode = mode  # ← mode attribute is here in the handler
+        self.current_process = None
+        self.stop_monitoring = False
+        self.processing_thread = None
 
-        # Créer le dossier des résultats
         RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+        PROCESSED_FOLDER.mkdir(parents=True, exist_ok=True)
+
+        self.start_processing_thread()
+
+    def start_processing_thread(self):
+        self.processing_thread = threading.Thread(target=self._process_queue, daemon=True)
+        self.processing_thread.start()
+        logger.info("🔄 Processing thread started")
+
+    def _process_queue(self):
+        while not self.stop_monitoring:
+            try:
+                sql_file = self.pending_queue.get(timeout=1)
+
+                if sql_file is None:
+                    break
+
+                self.processing = True
+                try:
+                    if self.wait_for_file_ready(sql_file):
+                        self.run_pipeline(sql_file)
+                except Exception as e:
+                    logger.error(f"❌ Error: {e}")
+                finally:
+                    self.processing = False
+                    self.pending_queue.task_done()
+
+            except queue.Empty:
+                continue
 
     def wait_for_file_ready(self, file_path, max_retries=10, delay=1):
         for i in range(max_retries):
@@ -52,11 +88,10 @@ class SQLFileHandler(FileSystemEventHandler):
                 size1 = os.path.getsize(file_path)
                 time.sleep(0.5)
                 size2 = os.path.getsize(file_path)
-                if size1 == size2:
-                    logger.info(f"✅ Fichier prêt: {Path(file_path).name} ({size1} bytes)")
+                if size1 == size2 and size1 > 0:
+                    logger.info(f"✅ File ready: {Path(file_path).name}")
                     return True
-            except (IOError, OSError) as e:
-                logger.debug(f"⏳ Fichier pas encore prêt ({i + 1}/{max_retries}): {e}")
+            except:
                 time.sleep(delay)
         return False
 
@@ -72,57 +107,39 @@ class SQLFileHandler(FileSystemEventHandler):
                 self.handle_new_sql_file(event.src_path)
 
     def handle_new_sql_file(self, file_path):
-        if self.processing:
-            self.pending_files.add(file_path)
-            logger.info(f"⏳ Pipeline en cours, fichier mis en attente: {Path(file_path).name}")
+        if not os.path.exists(file_path):
             return
 
-        self.processing = True
-        try:
-            logger.info(f"🎯 Nouveau fichier SQL détecté: {Path(file_path).name}")
-            if not self.wait_for_file_ready(file_path):
-                logger.error(f"❌ Impossible d'accéder au fichier {Path(file_path).name}")
-                return
-            self.run_pipeline()
-            while self.pending_files:
-                time.sleep(2)
-                self.pending_files.clear()
-                self.run_pipeline()
-        except Exception as e:
-            logger.error(f"❌ Erreur: {e}")
-        finally:
-            self.processing = False
+        file_name = Path(file_path).name
+        logger.info(f"➕ New SQL file: {file_name}")
+        self.pending_queue.put(file_path)
+        logger.info(f"📊 Queue: {self.pending_queue.qsize()}")
 
-    def run_pipeline(self):
+    def run_pipeline(self, sql_file):
         try:
-            logger.info(f"🚀 Lancement du pipeline en mode: {self.mode} (séquentiel)...")
-
-            # Afficher un séparateur visuel
             self._print_separator()
-            logger.info("📊 DÉBUT DE L'EXÉCUTION DU PIPELINE")
+            logger.info(f"📊 START - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            logger.info(f"📁 File: {Path(sql_file).name}")
             self._print_separator()
 
             env = os.environ.copy()
             env['PYTHONIOENCODING'] = 'utf-8'
-            env['PYTHONUTF8'] = '1'
-            env['MLFLOW_TRACKING_URI'] = str(PROJECT_ROOT / 'mlruns')
-
-            # Désactiver le buffering pour voir les logs en temps réel
+            env['MLFLOW_TRACKING_URI'] = 'http://localhost:5000'
             env['PYTHONUNBUFFERED'] = '1'
 
-            # Appeler le pipeline séquentiel
+            # Command with --input to use the specific file
             cmd = [
                 "poetry", "run", "python",
-                "-u",  # Unbuffered output
+                "-u",
                 "-m", "pricing_epac.flows.pricing_full_pipeline",
-                "--mode", self.mode
+                "--mode", self.mode,
+                "--input", str(sql_file),
+                "--once"  # To avoid automatic promotion
             ]
 
-            logger.info(f"📋 Commande: {' '.join(cmd)}")
-            logger.info("⏳ Exécution en cours...\n")
+            logger.info(f"📋 Command: {' '.join(cmd)}")
 
-            # Capturer la sortie en temps réel
-            process = subprocess.Popen(
+            self.current_process = subprocess.Popen(
                 cmd,
                 cwd=PROJECT_ROOT,
                 stdout=subprocess.PIPE,
@@ -130,186 +147,88 @@ class SQLFileHandler(FileSystemEventHandler):
                 env=env,
                 text=True,
                 encoding='utf-8',
-                bufsize=1,  # Line buffered
-                universal_newlines=True
+                bufsize=1
             )
 
-            # Variables pour capturer les résultats
             pipeline_output = []
             has_errors = False
+            start_time = time.time()
 
-            # Lire stdout en temps réel
-            for line in process.stdout:
+            for line in self.current_process.stdout:
                 line = line.rstrip()
                 pipeline_output.append(line)
-
-                # Afficher avec un préfixe visuel
+                self._display_line(line)
                 if "ERROR" in line or "❌" in line:
-                    logger.error(f"❌ {line}")
                     has_errors = True
-                elif "WARNING" in line or "⚠️" in line:
-                    logger.warning(f"⚠️ {line}")
-                elif "✅" in line or "✔️" in line:
-                    logger.info(f"✅ {line}")
-                elif "🏆" in line or "🏁" in line:
-                    logger.info(f"🏆 {line}")
-                elif "📊" in line:
-                    logger.info(f"📊 {line}")
-                else:
-                    logger.info(f"   {line}")  # Indentation pour les logs normaux
 
-            # Lire stderr
-            for line in process.stderr:
+            for line in self.current_process.stderr:
                 line = line.rstrip()
                 pipeline_output.append(f"ERR: {line}")
                 logger.error(f"🔴 {line}")
                 has_errors = True
 
-            return_code = process.wait(timeout=14400)  # 4 heures max
-
-            self._print_separator()
+            return_code = self.current_process.wait(timeout=14400)
+            elapsed = time.time() - start_time
 
             if return_code == 0 and not has_errors:
-                logger.info("✅ PIPELINE TERMINÉ AVEC SUCCÈS!")
+                logger.info(f"✅ SUCCESS in {elapsed / 60:.1f} minutes!")
+                self._save_results(pipeline_output, elapsed, sql_file)
 
-                # Extraire et afficher les résultats du pipeline
-                self._display_pipeline_results(pipeline_output)
-
-                # Sauvegarder les résultats dans un fichier
-                self._save_results(pipeline_output)
-
+                # Move to processed
+                dest = PROCESSED_FOLDER / Path(sql_file).name
+                shutil.move(str(sql_file), str(dest))
+                logger.info(f"📁 File moved to: {dest}")
             else:
-                logger.error(f"❌ PIPELINE ÉCHOUÉ (code {return_code})")
-                if has_errors:
-                    logger.error("   Des erreurs ont été détectées pendant l'exécution")
+                logger.error(f"❌ FAILED after {elapsed / 60:.1f} minutes")
 
-            self._print_separator()
-
-        except subprocess.TimeoutExpired:
-            logger.error("❌ Pipeline timeout après 4 heures")
-            process.kill()
         except Exception as e:
-            logger.error(f"❌ Erreur: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
+            logger.error(f"❌ Error: {e}")
+        finally:
+            self.current_process = None
+
+    def _display_line(self, line):
+        if "ERROR" in line or "❌" in line:
+            logger.error(f"❌ {line}")
+        elif "WARNING" in line or "⚠️" in line:
+            logger.warning(f"⚠️ {line}")
+        elif "✅" in line:
+            logger.info(f"✅ {line}")
+        else:
+            logger.info(f"   {line}")
 
     def _print_separator(self):
-        """Affiche un séparateur visuel"""
-        separator = "=" * 80
-        logger.info(separator)
+        logger.info("=" * 80)
 
-    def _display_pipeline_results(self, output_lines):
-        """Extrait et affiche les résultats importants du pipeline"""
-
-        # Patterns à rechercher dans les logs
-        important_patterns = [
-            "🏆 MEILLEUR MODÈLE",
-            "📋 CLASSEMENT",
-            "✅ Modèle sauvegardé",
-            "📦 ENREGISTREMENT DANS MLFLOW",
-            "📊 EXEMPLES DE PRÉDICTIONS",
-            "📈 STATISTIQUES",
-            "🎯 Modèle global entraîné",
-            "✅ Tous les modèles ont été entraînés"
-        ]
-
-        logger.info("\n📋 RÉSULTATS DU PIPELINE:")
-        self._print_separator()
-
-        results_found = False
-
-        for line in output_lines:
-            for pattern in important_patterns:
-                if pattern in line:
-                    logger.info(f"   {line}")
-                    results_found = True
-                    break
-
-        if not results_found:
-            logger.info("   Aucun résultat spécifique trouvé dans les logs")
-
-        # Chercher le meilleur modèle et ses métriques
-        best_model = None
-        best_rmse = None
-
-        for line in output_lines:
-            if "🏆 MEILLEUR MODÈLE" in line:
-                best_model = line
-            if "RMSE final" in line:
-                best_rmse = line
-
-        if best_model and best_rmse:
-            logger.info("\n🎯 RÉSUMÉ:")
-            logger.info(f"   {best_model}")
-            logger.info(f"   {best_rmse}")
-
-    def _save_results(self, output_lines):
-        """Sauvegarde les résultats dans un fichier"""
+    def _save_results(self, output_lines, elapsed_minutes, sql_file):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        result_file = RESULTS_DIR / f"pipeline_result_{timestamp}.txt"
+        sql_name = Path(sql_file).stem
 
-        # Sauvegarder tous les logs
+        result_file = RESULTS_DIR / f"pipeline_{sql_name}_{timestamp}.txt"
         with open(result_file, 'w', encoding='utf-8') as f:
-            f.write(f"Pipeline execution at {datetime.now().isoformat()}\n")
-            f.write(f"Mode: {self.mode}\n")
+            f.write(f"Pipeline at {datetime.now().isoformat()}\n")
+            f.write(f"SQL: {sql_file}\n")
+            f.write(f"Duration: {elapsed_minutes:.1f} minutes\n")
             f.write("=" * 80 + "\n")
             for line in output_lines:
                 f.write(line + "\n")
 
-        logger.info(f"💾 Logs complets sauvegardés dans: {result_file}")
+        logger.info(f"💾 Results: {result_file}")
 
-        # Extraire et sauvegarder les métriques dans un JSON
-        metrics = self._extract_metrics(output_lines)
-        if metrics:
-            metrics_file = RESULTS_DIR / f"metrics_{timestamp}.json"
-            with open(metrics_file, 'w', encoding='utf-8') as f:
-                json.dump(metrics, f, indent=2)
-            logger.info(f"📊 Métriques sauvegardées dans: {metrics_file}")
-
-    def _extract_metrics(self, output_lines):
-        """Extrait les métriques des logs"""
-        metrics = {
-            "timestamp": datetime.now().isoformat(),
-            "mode": self.mode,
-            "best_model": None,
-            "rmse": None,
-            "r2": None,
-            "models": []
-        }
-
-        for line in output_lines:
-            if "🏆 MEILLEUR MODÈLE" in line:
-                metrics["best_model"] = line.split(":")[-1].strip() if ":" in line else line
-            elif "RMSE final" in line:
-                try:
-                    metrics["rmse"] = float(line.split("=")[-1].strip().replace("€", "").strip())
-                except:
-                    pass
-            elif "R²" in line and ":" in line:
-                try:
-                    if metrics["r2"] is None:
-                        metrics["r2"] = float(line.split(":")[-1].strip())
-                except:
-                    pass
-            elif "📋 CLASSEMENT" in line:
-                # On va capturer les modèles après
-                pass
-            elif any(m in line for m in ["RandomForest", "XGBoost", "LightGBM"]):
-                if "RMSE" in line:
-                    metrics["models"].append(line.strip())
-
-        return metrics
+    def stop(self):
+        self.stop_monitoring = True
+        self.pending_queue.put(None)
+        if self.current_process:
+            self.current_process.terminate()
 
 
 class Watcher:
     def __init__(self, watch_path=None, mode="all"):
         self.watch_path = watch_path or SQL_FOLDER
+        self.mode = mode  # ← Added mode attribute here as well
         self.watch_path.mkdir(parents=True, exist_ok=True)
         self.observer = Observer()
         self.handler = SQLFileHandler(mode)
-        self.mode = mode
 
-        # Configuration du logging pour le fichier
         file_handler = logging.FileHandler(LOG_FILE, encoding='utf-8')
         file_handler.setLevel(logging.INFO)
         file_handler.setFormatter(logging.Formatter('%(asctime)s - %(message)s'))
@@ -317,30 +236,18 @@ class Watcher:
 
     def start(self):
         self._print_banner()
-
-        if sys.platform == 'win32':
-            try:
-                import ctypes
-                kernel32 = ctypes.windll.kernel32
-                kernel32.SetConsoleOutputCP(65001)
-                kernel32.SetConsoleCP(65001)
-            except:
-                pass
-
         self.observer.schedule(self.handler, str(self.watch_path), recursive=False)
 
         with open(PID_FILE, 'w') as f:
             f.write(str(os.getpid()))
-        with open(MODE_FILE, 'w') as f:
-            f.write(self.mode)
 
         self.observer.start()
+        logger.info("✅ Watcher active - Ctrl+C to stop")
+        logger.info(f"📁 Monitored folder: {self.watch_path}")
+        logger.info(f"📁 Processed folder: {PROCESSED_FOLDER}")
+        logger.info(f"📊 Results: {RESULTS_DIR}")
+        logger.info("🛑 To stop: Ctrl+C\n")
 
-        logger.info("✅ Watcher actif - en attente de fichiers SQL...")
-        logger.info("📁 Les résultats seront affichés ici en temps réel")
-        logger.info("💾 Logs sauvegardés dans: %s", LOG_FILE)
-
-        # Configuration du handler pour Ctrl+C
         signal.signal(signal.SIGINT, self.signal_handler)
 
         try:
@@ -350,72 +257,54 @@ class Watcher:
             self.stop()
 
     def signal_handler(self, sig, frame):
-        logger.info("🛑 Arrêt demandé...")
         self.stop()
 
     def stop(self):
+        logger.info("🛑 Stopping...")
+        self.handler.stop()
         self.observer.stop()
         self.observer.join()
-        for f in [PID_FILE, MODE_FILE]:
-            if f.exists():
-                f.unlink()
 
-        self._print_banner()
-        logger.info("👋 Watcher arrêté")
-        logger.info("📁 Derniers résultats disponibles dans: %s", RESULTS_DIR)
-        logger.info("📊 Logs complets: %s", LOG_FILE)
+        if PID_FILE.exists():
+            PID_FILE.unlink()
+
+        logger.info("👋 Stopped")
         sys.exit(0)
 
     def _print_banner(self):
         banner = f"""
 {'=' * 60}
-🚀 WATCHER PIPELINE PRICING (MODE SÉQUENTIEL)
+🚀 PRICING WATCHER - CONTINUOUS MODE
 {'=' * 60}
-📁 Dossier surveillé: {self.watch_path}
+📁 Folder: {self.watch_path}
 ⚡ Mode: {self.mode}
-📊 Résultats: {RESULTS_DIR}
-📝 Logs: {LOG_FILE}
+📁 Processed: {PROCESSED_FOLDER}
+📊 Results: {RESULTS_DIR}
 {'=' * 60}
 """
         logger.info(banner)
 
 
-def is_running():
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--mode", type=str, default="all",
+                        choices=["all", "global", "family", "couple", "features"])
+    args = parser.parse_args()
+
+    # Check if watcher is already running
     if PID_FILE.exists():
         try:
             with open(PID_FILE, 'r') as f:
                 pid = int(f.read().strip())
+            # Check if process exists
             os.kill(pid, 0)
-            return True
+            logger.error("❌ Watcher already running")
+            sys.exit(1)
         except:
+            # PID file exists but process is dead
             PID_FILE.unlink()
-            if MODE_FILE.exists():
-                MODE_FILE.unlink()
-    return False
-
-
-if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(description="Watcher pour pipeline pricing (mode séquentiel)")
-    parser.add_argument("--mode", type=str, default="all",
-                        choices=["all", "global", "family"],
-                        help="Mode d'exécution")
-    args = parser.parse_args()
-
-    # Vérifier si on veut exécuter seulement le mode all
-    if args.mode != "all":
-        logger.error(f"❌ Ce script ne peut être exécuté qu'avec --mode all")
-        logger.info("👉 Utilisation: poetry run python scripts/watcher.py --mode all")
-        sys.exit(1)
-
-    if is_running():
-        logger.error("❌ Un watcher est déjà en cours")
-        if MODE_FILE.exists():
-            with open(MODE_FILE, 'r') as f:
-                current_mode = f.read().strip()
-            logger.info(f"📌 Mode actuel: {current_mode}")
-        sys.exit(1)
 
     watcher = Watcher(mode=args.mode)
     watcher.start()
