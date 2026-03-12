@@ -1154,7 +1154,8 @@ def run_global_training(cleaned_file: Path, sample_X: pd.DataFrame) -> Dict[str,
     print("\n" + "=" * 70)
     print("🌍 GLOBAL MODEL TRAINING")
     print("=" * 70)
-    # === SOLUTION: Force end of any active run ===
+
+    # Force end of any active run
     try:
         mlflow.end_run()
     except:
@@ -1167,15 +1168,18 @@ def run_global_training(cleaned_file: Path, sample_X: pd.DataFrame) -> Dict[str,
     input_dvc_hash = compute_dvc_hash(cleaned_file)
     print(f"\n🔗 Input data DVC hash: {input_dvc_hash}")
 
+    # UN SEUL RUN PARENT - tout sera loggé dans ce contexte
     with mlflow.start_run(run_name=run_name) as run:
         print(f"Run ID       : {run.info.run_id}")
         print(f"Experiment ID: {run.info.experiment_id}")
 
+        # === TAGS DU RUN PARENT ===
         mlflow.set_tag("model_type", "global")
         mlflow.set_tag("git_commit", get_git_commit_hash())
         mlflow.set_tag("run_name", run_name)
         mlflow.set_tag("input_data_dvc_hash", input_dvc_hash)
 
+        # === PARAMÈTRES ===
         mlflow.log_params({
             "features_count": len(RAW_FEATURES),
             "num_features": len(NUM_VARS),
@@ -1184,11 +1188,13 @@ def run_global_training(cleaned_file: Path, sample_X: pd.DataFrame) -> Dict[str,
             "input_data_dvc_hash": input_dvc_hash
         })
 
-        # === MODIFICATION: Also retrieve feature importance ===
+        # Appel à train_and_compare AVEC LE RUN EXISTANT
+        # Cela empêchera train_and_compare de créer un nouveau run
         best_name, results, best_pipe, X_test, y_test, _, feature_importance, feature_importance_json = train_and_compare(
-            str(cleaned_file)
+            str(cleaned_file),
+            register_to_mlflow=True,
+            mlflow_run=run  # ← Passage du run existant pour éviter la duplication
         )
-        # ================================================================
 
         best_metrics = {}
         if results:
@@ -1198,13 +1204,9 @@ def run_global_training(cleaned_file: Path, sample_X: pd.DataFrame) -> Dict[str,
                 "r2": best['r2'],
                 "mae": best['mae'],
             }
+            # Note: les métriques sont déjà loggées dans _log_training_to_mlflow
+            # mais on les logge aussi au niveau parent pour visibilité
             mlflow.log_metrics(best_metrics)
-            for r in results:
-                mlflow.log_metrics({
-                    f"{r['model_name']}_rmse": r['rmse'],
-                    f"{r['model_name']}_r2": r['r2'],
-                    f"{r['model_name']}_mae": r['mae'],
-                })
 
         print("\n📊 Creating model comparison table...")
         comparison_df = create_comparison_dataframe(results, "global")
@@ -1237,7 +1239,7 @@ def run_global_training(cleaned_file: Path, sample_X: pd.DataFrame) -> Dict[str,
                 mlflow.log_table(data=comparison_df, artifact_file="comparisons/comparison_table.json")
                 print(f"   ✅ Table logged as metric")
 
-        # ===== NEW VERSION: Custom signature with long for booleans =====
+        # ===== Custom signature with long for booleans =====
         from mlflow.models.signature import ModelSignature
         from mlflow.types.schema import Schema, ColSpec
 
@@ -1248,7 +1250,6 @@ def run_global_training(cleaned_file: Path, sample_X: pd.DataFrame) -> Dict[str,
         ]
 
         # Load a sample of data to build the schema
-        # Note: We use cleaned_file to have the actual columns
         df_sample = pd.read_excel(cleaned_file, nrows=5)
 
         schema_list = []
@@ -1279,7 +1280,6 @@ def run_global_training(cleaned_file: Path, sample_X: pd.DataFrame) -> Dict[str,
         # Infer output signature
         sample_input = df_sample[[c for c in df_sample.columns if c in RAW_FEATURES]]
         if sample_input.empty or len(sample_input) == 0:
-            # Fallback on sample_X if df_sample doesn't work
             sample_input = sample_X.head(5)
 
         sample_output = best_pipe.predict(sample_input)
@@ -1290,7 +1290,6 @@ def run_global_training(cleaned_file: Path, sample_X: pd.DataFrame) -> Dict[str,
         print(f"\n✅ Custom signature created with {len(schema_list)} columns:")
         for col in signature.inputs.inputs:
             print(f"   - {col.name}: {col.type}")
-        # ====================================================================
 
         desc = f"Global pricing model – best: {best_name} – RMSE {best['rmse']:.4f} – {datetime.now().strftime('%Y-%m-%d %H:%M')}"
 
@@ -1310,22 +1309,28 @@ def run_global_training(cleaned_file: Path, sample_X: pd.DataFrame) -> Dict[str,
         if feature_importance:
             model_metadata["feature_importance"] = feature_importance
 
-        model_info = mlflow.sklearn.log_model(
-            sk_model=best_pipe,
-            artifact_path="model",
-            signature=signature,  # Using custom signature
-            registered_model_name=MLFLOW_MODEL_NAME_GLOBAL,
-            metadata=model_metadata
-        )
+        # Note: le modèle est DÉJÀ enregistré dans _log_training_to_mlflow
+        # On récupère la version depuis les tags ou on laisse la fonction interne gérer
 
-        version = getattr(model_info, 'registered_model_version', None)
+        # Récupérer la version du modèle depuis le client MLflow
+        version = None
+        try:
+            client = MlflowClient()
+            # Chercher la dernière version du modèle
+            latest_versions = client.get_latest_versions(MLFLOW_MODEL_NAME_GLOBAL, stages=["None"])
+            if latest_versions:
+                # Prendre la plus récente (celle qui vient d'être créée)
+                version = latest_versions[-1].version
+        except:
+            pass
 
+        # Si pas de version trouvée, on utilise None
         if version:
             # Save model temporarily to compute its hash
             temp_model_path = MODELS_DIR / f"temp_global_model_v{version}.joblib"
             dump(best_pipe, temp_model_path)
             model_dvc_hash = compute_dvc_hash(temp_model_path)
-            temp_model_path.unlink()  # Remove temporary file
+            temp_model_path.unlink()
 
             # Save DVC hash tracking file
             dvc_tracking_file = save_dvc_hash_tracking(
@@ -1344,7 +1349,8 @@ def run_global_training(cleaned_file: Path, sample_X: pd.DataFrame) -> Dict[str,
                 )
                 print(f"   ✅ Description added to version {version}")
 
-                initial_tags = {
+                # Tags supplémentaires pour la version du modèle
+                additional_tags = {
                     TAG_LIFECYCLE_STATUS: "new",
                     TAG_TRAINING_DATE: datetime.now().isoformat(),
                     TAG_GIT_COMMIT: get_git_commit_hash(),
@@ -1353,31 +1359,33 @@ def run_global_training(cleaned_file: Path, sample_X: pd.DataFrame) -> Dict[str,
                     TAG_RUN_ID: run.info.run_id,
                     TAG_RUN_NAME: run_name,
                     TAG_DVC_TRACKED: "true",
-                    # Add tag indicating booleans are integers
                     "bool_cols_as_int": json.dumps(bool_cols_as_int),
                     "input_data_dvc_hash": input_dvc_hash,
                     "model_dvc_hash": model_dvc_hash,
                     "dvc_tracking_file": str(dvc_tracking_file)
                 }
 
-                # ADD: Add feature importance to tags
                 if feature_importance_json:
-                    initial_tags["feature_importance"] = feature_importance_json
+                    additional_tags["feature_importance"] = feature_importance_json
 
                 if best_metrics:
-                    initial_tags[TAG_PERFORMANCE_RMSE] = str(best_metrics["rmse"])
-                    initial_tags[TAG_PERFORMANCE_R2] = str(best_metrics["r2"])
+                    additional_tags[TAG_PERFORMANCE_RMSE] = str(best_metrics["rmse"])
+                    additional_tags[TAG_PERFORMANCE_R2] = str(best_metrics["r2"])
 
-                set_model_version_tags(MLFLOW_MODEL_NAME_GLOBAL, int(version), initial_tags)
+                # Mettre à jour les tags (sans écraser ceux déjà définis)
+                set_model_version_tags(MLFLOW_MODEL_NAME_GLOBAL, int(version), additional_tags)
 
             except Exception as e:
                 print(f"   ⚠️ Unable to add description/tags: {e}")
+        else:
+            model_dvc_hash = None
+            dvc_tracking_file = None
 
         print(f"\nBest model: {best_name}")
         print(f"MLflow version: {version or 'not registered'}")
         if feature_importance:
             print(f"📊 Feature importance: {len(feature_importance)} features extracted")
-        print(f"🔗 Model DVC hash: {model_dvc_hash if version else 'N/A'}")
+        print(f"🔗 Model DVC hash: {model_dvc_hash or 'N/A'}")
 
         return {
             "best_model_name": best_name,
@@ -1390,15 +1398,14 @@ def run_global_training(cleaned_file: Path, sample_X: pd.DataFrame) -> Dict[str,
             "comparison_table": "comparisons/global_model_comparison.csv",
             "run_name": run_name,
             "bool_cols_as_int": bool_cols_as_int,
-            "feature_importance": feature_importance,  # ADD: Return feature importance
-            "feature_importance_json": feature_importance_json,  # ADD: Return JSON version
+            "feature_importance": feature_importance,
+            "feature_importance_json": feature_importance_json,
             "dvc_hashes": {
                 "input_data": input_dvc_hash,
                 "model": model_dvc_hash if version else None
             },
             "dvc_tracking_file": str(dvc_tracking_file) if version else None
         }
-
 
 @task(name="Create Client Features", retries=1)
 def create_client_features_task(cleaned_file: Path) -> Tuple[Path, pd.DataFrame, pd.DataFrame, Dict[str, Any]]:
@@ -1549,55 +1556,59 @@ def run_family_training(cleaned_file: Path) -> Dict[str, Any]:
     input_dvc_hash = compute_dvc_hash(cleaned_file)
     print(f"\n🔗 Input data DVC hash: {input_dvc_hash}")
 
-    def safe_start_run(run_name):
-        try:
-            mlflow.end_run()
-        except:
-            pass
-        return mlflow.start_run(run_name=run_name)
-
-    mlflow.set_experiment("Pricing_Family_Models")
-    run_name = f"family-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    # NE PAS créer de run ici - train_by_bindingtype va le faire
+    # On va juste récupérer les infos du run depuis training_results
 
     # Create a list to store models registered in MLflow
     mlflow_created_models = []
 
-    with safe_start_run(run_name) as run:
-        print(f"📝 MLflow Run ID: {run.info.run_id}")
-        print(f"📝 MLflow Experiment ID: {run.info.experiment_id}")
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp_path = Path(tmp_dir)
 
-        mlflow.set_tag("model_type", "family")
-        mlflow.set_tag("git_commit", get_git_commit_hash())
-        mlflow.set_tag("run_name", run_name)
-        mlflow.set_tag("input_data_dvc_hash", input_dvc_hash)
+        print("   🔄 Launching train_by_bindingtype...")
+        # train_by_bindingtype va créer son propre run MLflow
+        training_results = train_by_bindingtype(
+            file_path=str(cleaned_file),
+            run_linear=True,
+            run_nonlinear=True,
+            min_samples=50,
+            save_pipelines=True,
+            output_dir=tmp_path,
+            register_to_mlflow=True  # ← C'est ici que le run est créé
+        )
 
-        mlflow.log_param("input_data_dvc_hash", input_dvc_hash)
+        # Récupérer les informations du run depuis training_results
+        run_id = training_results.get("run_id")
+        experiment_id = training_results.get("experiment_id")
+        run_name = training_results.get("run_name", "family-training")
 
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            tmp_path = Path(tmp_dir)
+        print(f"📝 MLflow Run ID: {run_id}")
+        print(f"📝 MLflow Experiment ID: {experiment_id}")
 
-            print("   🔄 Launching train_by_bindingtype...")
-            # HERE: retrieve the full result from train_by_bindingtype
-            training_results = train_by_bindingtype(
-                file_path=str(cleaned_file),
-                run_linear=True,
-                run_nonlinear=True,
-                min_samples=50,
-                save_pipelines=True,
-                output_dir=tmp_path
-            )
+        # Now we have access to training_results["created_models"]
+        local_created_models = training_results.get("created_models", [])
 
-            # Now we have access to training_results["created_models"]
-            # which contains the 14 locally created models
-            local_created_models = training_results.get("created_models", [])
+        # Log metrics and artifacts to the EXISTING run
+        if run_id:
+            client = MlflowClient()
 
-            mlflow.log_metrics({
-                "n_families_linear": len(training_results["linear"]),
-                "n_families_nonlinear": len(training_results["nonlinear"]),
-                "total_families": len(training_results["linear"]) + len(training_results["nonlinear"])
-            })
+            # === CONSERVER TOUS LES TAGS DU RUN PARENT ===
+            # Tags déjà définis dans train_by_bindingtype
+            client.set_tag(run_id, "model_type", "family")
+            client.set_tag(run_id, "git_commit", get_git_commit_hash())
+            client.set_tag(run_id, "run_name", run_name)
+            client.set_tag(run_id, "input_data_dvc_hash", input_dvc_hash)
 
-            # Process linear models
+            # Paramètres
+            client.log_param(run_id, "input_data_dvc_hash", input_dvc_hash)
+
+            # Métriques globales
+            client.log_metric(run_id, "n_families_linear", len(training_results["linear"]))
+            client.log_metric(run_id, "n_families_nonlinear", len(training_results["nonlinear"]))
+            client.log_metric(run_id, "total_families",
+                              len(training_results["linear"]) + len(training_results["nonlinear"]))
+
+            # Traitement des modèles linéaires
             print(f"   📊 Processing {len(training_results['linear'])} linear families...")
 
             linear_comparison_data = []
@@ -1617,132 +1628,67 @@ def run_family_training(cleaned_file: Path) -> Dict[str, Any]:
 
                 linear_csv_path = tmp_path / "linear_families_comparison.csv"
                 linear_df.to_csv(linear_csv_path, index=False)
-                mlflow.log_artifact(str(linear_csv_path), "comparisons/families")
+                client.log_artifact(run_id, str(linear_csv_path), "comparisons/families")
                 print(f"   ✅ Global comparison table for linear families saved")
 
             for lin in training_results["linear"]:
                 family = lin["family"]
                 try:
-                    mlflow.log_metrics({
-                        f"{family}_linear_cv_r2": float(lin["cv_r2"]),
-                        f"{family}_linear_n_samples": int(lin["n_samples"]),
-                    })
-                    mlflow.set_tag(f"{family}_linear_model_type", str(lin["best_model"]))
+                    # Log metrics via client
+                    client.log_metric(run_id, f"{family}_linear_cv_r2", float(lin["cv_r2"]))
+                    client.log_metric(run_id, f"{family}_linear_n_samples", int(lin["n_samples"]))
+                    client.set_tag(run_id, f"{family}_linear_model_type", str(lin["best_model"]))
 
+                    # Save metrics JSON locally and log as artifact
                     model_metadata = {
                         "family": family,
                         "cv_r2": float(lin["cv_r2"]),
                         "n_samples": int(lin["n_samples"]),
                         "best_model": str(lin["best_model"]),
                         "model_type": "linear",
-                        "run_id": run.info.run_id,
+                        "run_id": run_id,
                         "run_name": run_name,
-                        "input_data_dvc_hash": input_dvc_hash
+                        "input_data_dvc_hash": input_dvc_hash,
+                        "formula": lin.get("formula")
                     }
 
                     metrics_path = tmp_path / f"{family}_linear_metrics.json"
                     with open(metrics_path, "w") as f:
                         json.dump(model_metadata, f, indent=2)
-                    mlflow.log_artifact(str(metrics_path), f"families/{family}/linear")
+                    client.log_artifact(run_id, str(metrics_path), f"families/{family}/linear")
 
                     if lin.get("formula"):
                         formula_path = tmp_path / f"{family}_formula.txt"
                         with open(formula_path, "w") as f:
                             f.write(lin["formula"])
-                        mlflow.log_artifact(str(formula_path), f"families/{family}/linear")
+                        client.log_artifact(run_id, str(formula_path), f"families/{family}/linear")
 
-                    pipeline_file = tmp_path / f"{family}_linear_pipeline.joblib"
-                    if pipeline_file.exists():
-                        with open(pipeline_file, 'rb') as f:
-                            pipeline = load(f)
+                    # Récupérer les infos de version depuis local_created_models
+                    version = None
+                    dvc_tracking_file = None
+                    for m in local_created_models:
+                        if m.get("family") == family and m.get("type") == "linear":
+                            version = m.get("version")
+                            dvc_tracking_file = m.get("dvc_tracking_file")
+                            break
 
-                        model_name = f"PricingModel_{family}_Linear"
-
-                        family_comparison = []
-                        if "all_models" in lin:
-                            for model_result in lin["all_models"]:
-                                family_comparison.append({
-                                    "Model": model_result.get("name", model_result.get("model_name", "Unknown")),
-                                    "RMSE": round(model_result.get("rmse", 0), 4),
-                                    "R²": round(model_result.get("r2", 0), 4),
-                                    "MAE": round(model_result.get("mae", 0), 4),
-                                    "CV R²": round(model_result.get("cv_r2", 0), 4) if "cv_r2" in model_result else None
-                                })
-
-                        if family_comparison:
-                            family_df = pd.DataFrame(family_comparison)
-                            family_df = family_df.sort_values("RMSE").reset_index(drop=True)
-                            family_df.insert(0, "Rank", range(1, len(family_df) + 1))
-
-                            family_csv_path = tmp_path / f"{family}_linear_comparison.csv"
-                            family_df.to_csv(family_csv_path, index=False)
-
-                            model_metadata["comparison_table"] = f"{family}_linear_comparison.csv"
-
-                        model_info = mlflow.sklearn.log_model(
-                            sk_model=pipeline,
-                            artifact_path=model_name,
-                            signature=None,
-                            registered_model_name=model_name,
-                            metadata=model_metadata
-                        )
-
-                        version = getattr(model_info, 'registered_model_version', None)
-
-                        if version:
-                            # Save DVC hash tracking file
-                            dvc_tracking_file = save_dvc_hash_tracking(
-                                model_name,
-                                int(version),
-                                [pipeline_file],
-                                DVC_TRACKING_DIR
-                            )
-
-                            initial_tags = {
-                                TAG_LIFECYCLE_STATUS: "new",
-                                TAG_TRAINING_DATE: datetime.now().isoformat(),
-                                TAG_GIT_COMMIT: get_git_commit_hash(),
-                                TAG_MODEL_TYPE: "linear",
-                                TAG_FAMILY: family,
-                                TAG_BEST_MODEL: str(lin["best_model"]),
-                                TAG_PERFORMANCE_R2: str(float(lin["cv_r2"])),
-                                TAG_RUN_ID: run.info.run_id,
-                                TAG_RUN_NAME: run_name,
-                                TAG_DVC_TRACKED: "true",
-                                "linear_formula": lin.get("formula", "")[:500] if lin.get("formula") else "",
-                                "input_data_dvc_hash": input_dvc_hash,
-                                "dvc_tracking_file": str(dvc_tracking_file)
-                            }
-                            set_model_version_tags(model_name, int(version), initial_tags)
-
-                            if family_comparison:
-                                with tempfile.TemporaryDirectory() as model_tmp:
-                                    model_tmp_path = Path(model_tmp)
-                                    comp_path = model_tmp_path / f"{family}_linear_comparison.csv"
-                                    family_df.to_csv(comp_path, index=False)
-
-                                    client = MlflowClient()
-                                    client.log_artifact(run.info.run_id, str(comp_path),
-                                                        f"artifacts/{model_name}/comparisons")
-
-                            # Add to models created in MLflow
-                            mlflow_created_models.append({
-                                "model_name": model_name,
-                                "version": int(version),
-                                "family": family,
-                                "type": "linear",
-                                "metrics": {"r2": float(lin["cv_r2"]), "n_samples": int(lin["n_samples"])},
-                                "comparison_table": f"{family}_linear_comparison.csv" if family_comparison else None,
-                                "run_id": run.info.run_id,
-                                "run_name": run_name,
-                                "formula": lin.get("formula"),
-                                "dvc_tracking_file": str(dvc_tracking_file)
-                            })
-                            print(f"   ✅ Family {family} (linear) versioned: {model_name} v{version}")
+                    if version:
+                        mlflow_created_models.append({
+                            "model_name": f"PricingModel_{family}_Linear",
+                            "version": int(version),
+                            "family": family,
+                            "type": "linear",
+                            "metrics": {"r2": float(lin["cv_r2"]), "n_samples": int(lin["n_samples"])},
+                            "run_id": run_id,
+                            "run_name": run_name,
+                            "formula": lin.get("formula"),
+                            "dvc_tracking_file": dvc_tracking_file
+                        })
+                        print(f"   ✅ Family {family} (linear) versioned: PricingModel_{family}_Linear v{version}")
                 except Exception as e:
                     print(f"   ⚠️ Error versioning {family} linear: {e}")
 
-            # Process nonlinear models
+            # Traitement des modèles non-linéaires
             print(f"   📊 Processing {len(training_results['nonlinear'])} nonlinear families...")
 
             nonlinear_comparison_data = []
@@ -1762,18 +1708,16 @@ def run_family_training(cleaned_file: Path) -> Dict[str, Any]:
 
                 nonlinear_csv_path = tmp_path / "nonlinear_families_comparison.csv"
                 nonlinear_df.to_csv(nonlinear_csv_path, index=False)
-                mlflow.log_artifact(str(nonlinear_csv_path), "comparisons/families")
+                client.log_artifact(run_id, str(nonlinear_csv_path), "comparisons/families")
                 print(f"   ✅ Global comparison table for nonlinear families saved")
 
             for nl in training_results["nonlinear"]:
                 family = nl["family"]
                 try:
-                    mlflow.log_metrics({
-                        f"{family}_nonlinear_r2": float(nl["r2"]),
-                        f"{family}_nonlinear_n_samples": int(nl["n_samples"]),
-                        f"{family}_nonlinear_shap_success": 1 if nl.get("shap_success") else 0
-                    })
-                    mlflow.set_tag(f"{family}_nonlinear_model_type", str(nl["best_model"]))
+                    client.log_metric(run_id, f"{family}_nonlinear_r2", float(nl["r2"]))
+                    client.log_metric(run_id, f"{family}_nonlinear_n_samples", int(nl["n_samples"]))
+                    client.log_metric(run_id, f"{family}_nonlinear_shap_success", 1 if nl.get("shap_success") else 0)
+                    client.set_tag(run_id, f"{family}_nonlinear_model_type", str(nl["best_model"]))
 
                     model_metadata = {
                         "family": family,
@@ -1782,7 +1726,7 @@ def run_family_training(cleaned_file: Path) -> Dict[str, Any]:
                         "best_model": str(nl["best_model"]),
                         "shap_success": 1 if nl.get("shap_success") else 0,
                         "model_type": "nonlinear",
-                        "run_id": run.info.run_id,
+                        "run_id": run_id,
                         "run_name": run_name,
                         "input_data_dvc_hash": input_dvc_hash
                     }
@@ -1790,118 +1734,45 @@ def run_family_training(cleaned_file: Path) -> Dict[str, Any]:
                     metrics_path = tmp_path / f"{family}_nonlinear_metrics.json"
                     with open(metrics_path, "w") as f:
                         json.dump(model_metadata, f, indent=2)
-                    mlflow.log_artifact(str(metrics_path), f"families/{family}/nonlinear")
+                    client.log_artifact(run_id, str(metrics_path), f"families/{family}/nonlinear")
 
                     if nl.get("feature_importance"):
                         fi_path = tmp_path / f"{family}_feature_importance.json"
                         fi_serializable = {k: float(v) for k, v in nl["feature_importance"].items()}
                         with open(fi_path, "w") as f:
                             json.dump(fi_serializable, f, indent=2)
-                        mlflow.log_artifact(str(fi_path), f"families/{family}/nonlinear")
+                        client.log_artifact(run_id, str(fi_path), f"families/{family}/nonlinear")
 
-                    pipeline_file = tmp_path / f"{family}_nonlinear_pipeline.joblib"
-                    if pipeline_file.exists():
-                        with open(pipeline_file, 'rb') as f:
-                            pipeline = load(f)
+                    # Récupérer les infos de version depuis local_created_models
+                    version = None
+                    dvc_tracking_file = None
+                    for m in local_created_models:
+                        if m.get("family") == family and m.get("type") == "nonlinear":
+                            version = m.get("version")
+                            dvc_tracking_file = m.get("dvc_tracking_file")
+                            break
 
-                        model_name = f"PricingModel_{family}_NonLinear"
-
-                        family_comparison = []
-                        if "all_models" in nl:
-                            for model_result in nl["all_models"]:
-                                family_comparison.append({
-                                    "Model": model_result.get("name", model_result.get("model_name", "Unknown")),
-                                    "RMSE": round(model_result.get("rmse", 0), 4),
-                                    "R²": round(model_result.get("r2", 0), 4),
-                                    "MAE": round(model_result.get("mae", 0), 4),
-                                })
-
-                        if family_comparison:
-                            family_df = pd.DataFrame(family_comparison)
-                            family_df = family_df.sort_values("RMSE").reset_index(drop=True)
-                            family_df.insert(0, "Rank", range(1, len(family_df) + 1))
-
-                            family_csv_path = tmp_path / f"{family}_nonlinear_comparison.csv"
-                            family_df.to_csv(family_csv_path, index=False)
-
-                            model_metadata["comparison_table"] = f"{family}_nonlinear_comparison.csv"
-
-                        feature_importance_json = None
-                        if nl.get("feature_importance"):
-                            limited_fi = dict(list(nl["feature_importance"].items())[:50])
-                            feature_importance_json = json.dumps(limited_fi)
-
-                        model_info = mlflow.sklearn.log_model(
-                            sk_model=pipeline,
-                            artifact_path=model_name,
-                            signature=None,
-                            registered_model_name=model_name,
-                            metadata=model_metadata
-                        )
-
-                        version = getattr(model_info, 'registered_model_version', None)
-
-                        if version:
-                            # Save DVC hash tracking file
-                            dvc_tracking_file = save_dvc_hash_tracking(
-                                model_name,
-                                int(version),
-                                [pipeline_file],
-                                DVC_TRACKING_DIR
-                            )
-
-                            initial_tags = {
-                                TAG_LIFECYCLE_STATUS: "new",
-                                TAG_TRAINING_DATE: datetime.now().isoformat(),
-                                TAG_GIT_COMMIT: get_git_commit_hash(),
-                                TAG_MODEL_TYPE: "nonlinear",
-                                TAG_FAMILY: family,
-                                TAG_BEST_MODEL: str(nl["best_model"]),
-                                TAG_PERFORMANCE_R2: str(float(nl["r2"])),
-                                TAG_RUN_ID: run.info.run_id,
-                                TAG_RUN_NAME: run_name,
-                                TAG_DVC_TRACKED: "true",
-                                "shap_success": str(nl.get("shap_success", False)),
-                                "input_data_dvc_hash": input_dvc_hash,
-                                "dvc_tracking_file": str(dvc_tracking_file)
-                            }
-
-                            if feature_importance_json:
-                                initial_tags["feature_importance"] = feature_importance_json
-
-                            set_model_version_tags(model_name, int(version), initial_tags)
-
-                            if family_comparison:
-                                with tempfile.TemporaryDirectory() as model_tmp:
-                                    model_tmp_path = Path(model_tmp)
-                                    comp_path = model_tmp_path / f"{family}_nonlinear_comparison.csv"
-                                    family_df.to_csv(comp_path, index=False)
-
-                                    client = MlflowClient()
-                                    client.log_artifact(run.info.run_id, str(comp_path),
-                                                        f"artifacts/{model_name}/comparisons")
-
-                            # Add to models created in MLflow
-                            mlflow_created_models.append({
-                                "model_name": model_name,
-                                "version": int(version),
-                                "family": family,
-                                "type": "nonlinear",
-                                "metrics": {"r2": float(nl["r2"]), "n_samples": int(nl["n_samples"])},
-                                "comparison_table": f"{family}_nonlinear_comparison.csv" if family_comparison else None,
-                                "run_id": run.info.run_id,
-                                "run_name": run_name,
-                                "shap_success": nl.get("shap_success", False),
-                                "feature_importance": nl.get("feature_importance"),
-                                "dvc_tracking_file": str(dvc_tracking_file)
-                            })
-                            print(f"   ✅ Family {family} (nonlinear) versioned: {model_name} v{version}")
+                    if version:
+                        mlflow_created_models.append({
+                            "model_name": f"PricingModel_{family}_NonLinear",
+                            "version": int(version),
+                            "family": family,
+                            "type": "nonlinear",
+                            "metrics": {"r2": float(nl["r2"]), "n_samples": int(nl["n_samples"])},
+                            "run_id": run_id,
+                            "run_name": run_name,
+                            "shap_success": nl.get("shap_success", False),
+                            "feature_importance": nl.get("feature_importance"),
+                            "dvc_tracking_file": dvc_tracking_file
+                        })
+                        print(f"   ✅ Family {family} (nonlinear) versioned: PricingModel_{family}_NonLinear v{version}")
                 except Exception as e:
                     print(f"   ⚠️ Error versioning {family} nonlinear: {e}")
 
+            # Création et log du résumé
             summary = {
                 "timestamp": datetime.now().isoformat(),
-                "run_id": run.info.run_id,
+                "run_id": run_id,
                 "run_name": run_name,
                 "input_data_dvc_hash": input_dvc_hash,
                 "linear_families": [
@@ -1922,7 +1793,7 @@ def run_family_training(cleaned_file: Path) -> Dict[str, Any]:
                     {
                         "family": f["family"],
                         "best_model": f["best_model"],
-                        "R²": round(nl.get("r2_test", nl.get("r2", 0)), 4),
+                        "r2": float(nl["r2"]),
                         "n_samples": int(f["n_samples"]),
                         "model_name": f"PricingModel_{f['family']}_NonLinear",
                         "version": next((m["version"] for m in mlflow_created_models if
@@ -1937,26 +1808,28 @@ def run_family_training(cleaned_file: Path) -> Dict[str, Any]:
             summary_path = tmp_path / "family_models_summary.json"
             with open(summary_path, "w") as f:
                 json.dump(summary, f, indent=2)
-            mlflow.log_artifact(str(summary_path), "summary")
+            client.log_artifact(run_id, str(summary_path), "summary")
 
         print(
             f"\n✅ Models by BindingType completed: {len(training_results['linear'])} linear, {len(training_results['nonlinear'])} nonlinear")
-        print(
-            f"📊 MLflow Run: {mlflow.get_tracking_uri()}/#/experiments/{run.info.experiment_id}/runs/{run.info.run_id}")
+        if run_id:
+            print(
+                f"📊 MLflow Run: {mlflow.get_tracking_uri()}/#/experiments/{experiment_id}/runs/{run_id}")
 
-        # IMPORTANT: Now return mlflow_created_models containing models registered in MLflow
+        # Return mlflow_created_models containing models registered in MLflow
         return {
             "n_linear": len(training_results["linear"]),
             "n_nonlinear": len(training_results["nonlinear"]),
-            "run_id": run.info.run_id,
-            "experiment_id": run.info.experiment_id,
+            "run_id": run_id,
+            "experiment_id": experiment_id,
             "linear_families": [f["family"] for f in training_results["linear"]],
             "nonlinear_families": [f["family"] for f in training_results["nonlinear"]],
-            "created_models": mlflow_created_models,  # ← HERE: return list of models registered in MLflow
+            "created_models": mlflow_created_models,
             "run_name": run_name,
             "summary": summary,
             "input_data_dvc_hash": input_dvc_hash
         }
+
 
 @task(name="Training by Pair (BindingType × SIREN)")
 def run_couple_training(cleaned_file: Path) -> Dict[str, Any]:
@@ -1969,78 +1842,81 @@ def run_couple_training(cleaned_file: Path) -> Dict[str, Any]:
     input_dvc_hash = compute_dvc_hash(cleaned_file)
     print(f"\n🔗 Input data DVC hash: {input_dvc_hash}")
 
-    def safe_start_run(run_name):
-        try:
-            mlflow.end_run()
-        except:
-            pass
-        return mlflow.start_run(run_name=run_name)
+    # NE PAS créer de run ici - train_by_bindingtype_siren va le faire
+    # On va juste récupérer les infos du run depuis training_results
 
-    mlflow.set_experiment("Pricing_Couple_Models")
-    run_name = f"couple-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
     created_models = []
 
-    with safe_start_run(run_name) as run:
-        print(f"📝 MLflow Run ID: {run.info.run_id}")
-        print(f"📝 MLflow Experiment ID: {run.info.experiment_id}")
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp_path = Path(tmp_dir)
 
-        mlflow.set_tag("model_type", "couple")
-        mlflow.set_tag("git_commit", get_git_commit_hash())
-        mlflow.set_tag("run_name", run_name)
-        mlflow.set_tag("input_data_dvc_hash", input_dvc_hash)
+        print("   🔄 Launching train_by_bindingtype_siren...")
 
-        mlflow.log_param("input_data_dvc_hash", input_dvc_hash)
+        # Execute training function - ELLE VA CRÉER SON PROPRE RUN
+        try:
+            results = train_by_bindingtype_siren(
+                file_path=str(cleaned_file),
+                save_pipelines=True,
+                output_dir=tmp_path
+            )
 
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            tmp_path = Path(tmp_dir)
-
-            print("   🔄 Launching train_by_bindingtype_siren...")
-
-            # Execute training function
-            try:
-                results = train_by_bindingtype_siren(
-                    file_path=str(cleaned_file),
-                    save_pipelines=True,
-                    output_dir=tmp_path
-                )
-
-                print(f"   📊 Results structure: {type(results)}")
-                if isinstance(results, dict):
-                    print(f"   📊 Available keys: {list(results.keys())}")
-                elif isinstance(results, tuple):
-                    print(f"   📊 Tuple size: {len(results)}")
-
-            except Exception as e:
-                print(f"   ❌ Error calling train_by_bindingtype_siren: {e}")
-                traceback.print_exc()
-                return {
-                    "n_linear": 0,
-                    "n_nonlinear": 0,
-                    "run_id": run.info.run_id,
-                    "experiment_id": run.info.experiment_id,
-                    "linear_pairs": [],
-                    "nonlinear_pairs": [],
-                    "created_models": [],
-                    "run_name": run_name,
-                    "summary": {"linear_pairs": [], "nonlinear_pairs": []}
-                }
-
-            # Adapt results structure - CORRECTION ICI
-            linear_results = []
-            nonlinear_results = []
-            created_models_from_training = []
-
+            print(f"   📊 Results structure: {type(results)}")
             if isinstance(results, dict):
-                linear_results = results.get('linear', [])
-                nonlinear_results = results.get('nonlinear', [])
-                created_models_from_training = results.get('created_models', [])
-            elif isinstance(results, tuple) and len(results) >= 2:
-                linear_results = results[0] if results[0] else []
-                nonlinear_results = results[1] if results[1] else []
+                print(f"   📊 Available keys: {list(results.keys())}")
+        except Exception as e:
+            print(f"   ❌ Error calling train_by_bindingtype_siren: {e}")
+            traceback.print_exc()
+            return {
+                "n_linear": 0,
+                "n_nonlinear": 0,
+                "run_id": None,
+                "experiment_id": None,
+                "linear_pairs": [],
+                "nonlinear_pairs": [],
+                "created_models": [],
+                "run_name": None,
+                "summary": {"linear_pairs": [], "nonlinear_pairs": []},
+                "input_data_dvc_hash": input_dvc_hash
+            }
 
-            print(f"\n   📊 Linear results count: {len(linear_results)}")
-            print(f"   📊 Nonlinear results count: {len(nonlinear_results)}")
-            print(f"   📊 Created models from training: {len(created_models_from_training)}")
+        # Récupérer les informations du run depuis results
+        run_id = results.get("run_id")
+        experiment_id = results.get("experiment_id")
+        run_name = results.get("run_name", "couple-training")
+
+        print(f"📝 MLflow Run ID: {run_id}")
+        print(f"📝 MLflow Experiment ID: {experiment_id}")
+
+        # Adapt results structure
+        linear_results = []
+        nonlinear_results = []
+        created_models_from_training = []
+
+        if isinstance(results, dict):
+            linear_results = results.get('linear', [])
+            nonlinear_results = results.get('nonlinear', [])
+            created_models_from_training = results.get('created_models', [])
+
+        print(f"\n   📊 Linear results count: {len(linear_results)}")
+        print(f"   📊 Nonlinear results count: {len(nonlinear_results)}")
+        print(f"   📊 Created models from training: {len(created_models_from_training)}")
+
+        if run_id:
+            client = MlflowClient()
+
+            # === CONSERVER TOUS LES TAGS DU RUN PARENT ===
+            client.set_tag(run_id, "model_type", "couple")
+            client.set_tag(run_id, "git_commit", get_git_commit_hash())
+            client.set_tag(run_id, "run_name", run_name)
+            client.set_tag(run_id, "input_data_dvc_hash", input_dvc_hash)
+
+            # Paramètres
+            client.log_param(run_id, "input_data_dvc_hash", input_dvc_hash)
+
+            # Métriques globales
+            client.log_metric(run_id, "n_pairs_linear", len(linear_results))
+            client.log_metric(run_id, "n_pairs_nonlinear", len(nonlinear_results))
+            client.log_metric(run_id, "total_pairs", len(linear_results) + len(nonlinear_results))
 
             # Create comparison tables for pairs
             print(f"\n   📊 Creating comparison tables...")
@@ -2064,7 +1940,7 @@ def run_couple_training(cleaned_file: Path) -> Dict[str, Any]:
 
                 linear_csv_path = tmp_path / "linear_pairs_comparison.csv"
                 linear_df.to_csv(linear_csv_path, index=False)
-                mlflow.log_artifact(str(linear_csv_path), "comparisons/pairs")
+                client.log_artifact(run_id, str(linear_csv_path), "comparisons/pairs")
                 print(f"   ✅ Global comparison table for linear pairs saved")
 
             # Comparison table for nonlinear models
@@ -2086,18 +1962,11 @@ def run_couple_training(cleaned_file: Path) -> Dict[str, Any]:
 
                 nonlinear_csv_path = tmp_path / "nonlinear_pairs_comparison.csv"
                 nonlinear_df.to_csv(nonlinear_csv_path, index=False)
-                mlflow.log_artifact(str(nonlinear_csv_path), "comparisons/pairs")
+                client.log_artifact(run_id, str(nonlinear_csv_path), "comparisons/pairs")
                 print(f"   ✅ Global comparison table for nonlinear pairs saved")
 
-            # Log metrics
-            mlflow.log_metrics({
-                "n_pairs_linear": len(linear_results),
-                "n_pairs_nonlinear": len(nonlinear_results),
-                "total_pairs": len(linear_results) + len(nonlinear_results)
-            })
-
             # ============================================
-            # PROCESS LINEAR MODELS - CORRECTION ICI
+            # PROCESS LINEAR MODELS
             # ============================================
             print(f"\n   📊 Processing {len(linear_results)} linear pairs...")
 
@@ -2127,21 +1996,19 @@ def run_couple_training(cleaned_file: Path) -> Dict[str, Any]:
                     else:
                         model_name = f"PricingModel_{binding_type}_Linear"
 
-                    print(f"   📦 Model name: {model_name}")
-
-                    # Récupérer le pipeline
+                    # Récupérer le pipeline et les métriques
                     pipeline = lin.get("pipeline")
-                    if pipeline is None:
-                        print(f"   ⚠️ No pipeline found for {group}")
-                        continue
-
-                    # Extraire les métriques
                     cv_r2 = float(lin.get("cv_r2", 0))
                     n_samples = int(lin.get("n_samples", 0))
                     best_model = str(lin.get("best_model", "linear_model"))
                     formula = lin.get("formula")
 
-                    # Model metadata
+                    # Log metrics via client
+                    client.log_metric(run_id, f"{group}_linear_cv_r2", cv_r2)
+                    client.log_metric(run_id, f"{group}_linear_n_samples", n_samples)
+                    client.set_tag(run_id, f"{group}_linear_model_type", best_model)
+
+                    # Save metrics JSON locally and log as artifact
                     model_metadata = {
                         "group": group,
                         "binding_type": binding_type,
@@ -2150,63 +2017,33 @@ def run_couple_training(cleaned_file: Path) -> Dict[str, Any]:
                         "n_samples": n_samples,
                         "best_model": best_model,
                         "model_type": "linear",
-                        "run_id": run.info.run_id,
+                        "run_id": run_id,
                         "run_name": run_name,
-                        "input_data_dvc_hash": input_dvc_hash
+                        "input_data_dvc_hash": input_dvc_hash,
+                        "formula": formula
                     }
 
+                    metrics_path = tmp_path / f"{group}_linear_metrics.json"
+                    with open(metrics_path, "w") as f:
+                        json.dump(model_metadata, f, indent=2)
+                    client.log_artifact(run_id, str(metrics_path), f"pairs/{group}/linear")
+
                     if formula:
-                        model_metadata["formula"] = formula
+                        formula_path = tmp_path / f"{group}_formula.txt"
+                        with open(formula_path, "w") as f:
+                            f.write(formula)
+                        client.log_artifact(run_id, str(formula_path), f"pairs/{group}/linear")
 
-                    # Sauvegarder le pipeline temporairement
-                    pipeline_file = tmp_path / f"{group}_linear_pipeline.joblib"
-                    dump(pipeline, pipeline_file)
-
-                    # Register in MLflow
-                    model_info = mlflow.sklearn.log_model(
-                        sk_model=pipeline,
-                        artifact_path=model_name,
-                        signature=None,
-                        registered_model_name=model_name,
-                        metadata=model_metadata
-                    )
-
-                    version = getattr(model_info, 'registered_model_version', None)
+                    # Récupérer les infos de version depuis created_models_from_training
+                    version = None
+                    dvc_tracking_file = None
+                    for m in created_models_from_training:
+                        if m.get("group") == group and m.get("type") == "linear":
+                            version = m.get("version")
+                            dvc_tracking_file = m.get("dvc_tracking_file")
+                            break
 
                     if version:
-                        # Save DVC hash tracking file
-                        dvc_tracking_file = save_dvc_hash_tracking(
-                            model_name,
-                            int(version),
-                            [pipeline_file],
-                            DVC_TRACKING_DIR
-                        )
-
-                        # Tags
-                        initial_tags = {
-                            TAG_LIFECYCLE_STATUS: "new",
-                            TAG_TRAINING_DATE: datetime.now().isoformat(),
-                            TAG_GIT_COMMIT: get_git_commit_hash(),
-                            TAG_MODEL_TYPE: "linear",
-                            TAG_FAMILY: group,
-                            TAG_BEST_MODEL: best_model,
-                            TAG_PERFORMANCE_R2: str(cv_r2),
-                            TAG_RUN_ID: run.info.run_id,
-                            TAG_RUN_NAME: run_name,
-                            TAG_DVC_TRACKED: "true",
-                            "linear_formula": formula[:500] if formula else "",
-                            "input_data_dvc_hash": input_dvc_hash,
-                            "dvc_tracking_file": str(dvc_tracking_file)
-                        }
-
-                        if binding_type:
-                            initial_tags["binding_type"] = binding_type
-                        if siren:
-                            initial_tags["siren"] = siren
-
-                        set_model_version_tags(model_name, int(version), initial_tags)
-
-                        # Add to created models list
                         created_models.append({
                             "model_name": model_name,
                             "version": int(version),
@@ -2218,10 +2055,10 @@ def run_couple_training(cleaned_file: Path) -> Dict[str, Any]:
                                 "r2": cv_r2,
                                 "n_samples": n_samples
                             },
-                            "run_id": run.info.run_id,
+                            "run_id": run_id,
                             "run_name": run_name,
                             "formula": formula,
-                            "dvc_tracking_file": str(dvc_tracking_file)
+                            "dvc_tracking_file": dvc_tracking_file
                         })
                         print(f"   ✅ Pair {group} (linear) versioned: {model_name} v{version}")
 
@@ -2230,7 +2067,7 @@ def run_couple_training(cleaned_file: Path) -> Dict[str, Any]:
                     traceback.print_exc()
 
             # ============================================
-            # PROCESS NONLINEAR MODELS - CORRECTION ICI
+            # PROCESS NONLINEAR MODELS
             # ============================================
             print(f"\n   📊 Processing {len(nonlinear_results)} nonlinear pairs...")
 
@@ -2260,20 +2097,19 @@ def run_couple_training(cleaned_file: Path) -> Dict[str, Any]:
                     else:
                         model_name = f"PricingModel_{binding_type}_NonLinear"
 
-                    print(f"   📦 Model name: {model_name}")
-
-                    # Récupérer le pipeline
+                    # Récupérer le pipeline et les métriques
                     pipeline = nl.get("pipeline")
-                    if pipeline is None:
-                        print(f"   ⚠️ No pipeline found for {group}")
-                        continue
-
-                    # Extraire les métriques
                     r2 = float(nl.get("r2_test", nl.get("r2", 0)))
                     n_samples = int(nl.get("n_samples", 0))
                     best_model = str(nl.get("best_model", "nonlinear_model"))
                     shap_success = nl.get("shap_success", False)
                     feature_importance = nl.get("feature_importance")
+
+                    # Log metrics via client
+                    client.log_metric(run_id, f"{group}_nonlinear_r2", r2)
+                    client.log_metric(run_id, f"{group}_nonlinear_n_samples", n_samples)
+                    client.log_metric(run_id, f"{group}_nonlinear_shap_success", 1 if shap_success else 0)
+                    client.set_tag(run_id, f"{group}_nonlinear_model_type", best_model)
 
                     # Model metadata
                     model_metadata = {
@@ -2285,7 +2121,7 @@ def run_couple_training(cleaned_file: Path) -> Dict[str, Any]:
                         "best_model": best_model,
                         "shap_success": shap_success,
                         "model_type": "nonlinear",
-                        "run_id": run.info.run_id,
+                        "run_id": run_id,
                         "run_name": run_name,
                         "input_data_dvc_hash": input_dvc_hash
                     }
@@ -2293,64 +2129,29 @@ def run_couple_training(cleaned_file: Path) -> Dict[str, Any]:
                     if feature_importance:
                         model_metadata["feature_importance"] = feature_importance
 
-                    # Sauvegarder le pipeline temporairement
-                    pipeline_file = tmp_path / f"{group}_nonlinear_pipeline.joblib"
-                    dump(pipeline, pipeline_file)
+                    # Save metrics JSON
+                    metrics_path = tmp_path / f"{group}_nonlinear_metrics.json"
+                    with open(metrics_path, "w") as f:
+                        json.dump(model_metadata, f, indent=2)
+                    client.log_artifact(run_id, str(metrics_path), f"pairs/{group}/nonlinear")
 
-                    # Prepare feature importance for tags
-                    feature_importance_json = None
                     if feature_importance:
-                        limited_fi = dict(list(feature_importance.items())[:50])
-                        feature_importance_json = json.dumps(limited_fi)
+                        fi_path = tmp_path / f"{group}_feature_importance.json"
+                        fi_serializable = {k: float(v) for k, v in feature_importance.items()}
+                        with open(fi_path, "w") as f:
+                            json.dump(fi_serializable, f, indent=2)
+                        client.log_artifact(run_id, str(fi_path), f"pairs/{group}/nonlinear")
 
-                    # Register in MLflow
-                    model_info = mlflow.sklearn.log_model(
-                        sk_model=pipeline,
-                        artifact_path=model_name,
-                        signature=None,
-                        registered_model_name=model_name,
-                        metadata=model_metadata
-                    )
-
-                    version = getattr(model_info, 'registered_model_version', None)
+                    # Récupérer les infos de version depuis created_models_from_training
+                    version = None
+                    dvc_tracking_file = None
+                    for m in created_models_from_training:
+                        if m.get("group") == group and m.get("type") == "nonlinear":
+                            version = m.get("version")
+                            dvc_tracking_file = m.get("dvc_tracking_file")
+                            break
 
                     if version:
-                        # Save DVC hash tracking file
-                        dvc_tracking_file = save_dvc_hash_tracking(
-                            model_name,
-                            int(version),
-                            [pipeline_file],
-                            DVC_TRACKING_DIR
-                        )
-
-                        # Tags
-                        initial_tags = {
-                            TAG_LIFECYCLE_STATUS: "new",
-                            TAG_TRAINING_DATE: datetime.now().isoformat(),
-                            TAG_GIT_COMMIT: get_git_commit_hash(),
-                            TAG_MODEL_TYPE: "nonlinear",
-                            TAG_FAMILY: group,
-                            TAG_BEST_MODEL: best_model,
-                            TAG_PERFORMANCE_R2: str(r2),
-                            TAG_RUN_ID: run.info.run_id,
-                            TAG_RUN_NAME: run_name,
-                            TAG_DVC_TRACKED: "true",
-                            "shap_success": str(shap_success),
-                            "input_data_dvc_hash": input_dvc_hash,
-                            "dvc_tracking_file": str(dvc_tracking_file)
-                        }
-
-                        if binding_type:
-                            initial_tags["binding_type"] = binding_type
-                        if siren:
-                            initial_tags["siren"] = siren
-
-                        if feature_importance_json:
-                            initial_tags["feature_importance"] = feature_importance_json
-
-                        set_model_version_tags(model_name, int(version), initial_tags)
-
-                        # Add to created models list
                         created_models.append({
                             "model_name": model_name,
                             "version": int(version),
@@ -2362,11 +2163,11 @@ def run_couple_training(cleaned_file: Path) -> Dict[str, Any]:
                                 "r2": r2,
                                 "n_samples": n_samples
                             },
-                            "run_id": run.info.run_id,
+                            "run_id": run_id,
                             "run_name": run_name,
                             "shap_success": shap_success,
                             "feature_importance": feature_importance,
-                            "dvc_tracking_file": str(dvc_tracking_file)
+                            "dvc_tracking_file": dvc_tracking_file
                         })
                         print(f"   ✅ Pair {group} (nonlinear) versioned: {model_name} v{version}")
 
@@ -2379,7 +2180,7 @@ def run_couple_training(cleaned_file: Path) -> Dict[str, Any]:
             # ============================================
             summary = {
                 "timestamp": datetime.now().isoformat(),
-                "run_id": run.info.run_id,
+                "run_id": run_id,
                 "run_name": run_name,
                 "input_data_dvc_hash": input_dvc_hash,
                 "linear_pairs": [
@@ -2390,7 +2191,9 @@ def run_couple_training(cleaned_file: Path) -> Dict[str, Any]:
                         "best_model": lin.get("best_model", "unknown"),
                         "cv_r2": float(lin.get("cv_r2", 0)),
                         "n_samples": int(lin.get("n_samples", 0)),
-                        "model_name": f"PricingModel_{lin.get('binding_type', '')}__{lin.get('siren', '')}_Linear" if lin.get('binding_type') and lin.get('siren') else f"PricingModel_{lin.get('group', f'pair_{i}')}_Linear",
+                        "model_name": f"PricingModel_{lin.get('binding_type', '')}__{lin.get('siren', '')}_Linear" if lin.get(
+                            'binding_type') and lin.get(
+                            'siren') else f"PricingModel_{lin.get('group', f'pair_{i}')}_Linear",
                         "version": next((m["version"] for m in created_models if
                                          m.get("group") == lin.get("group") and
                                          m["type"] == "linear"), None),
@@ -2408,7 +2211,9 @@ def run_couple_training(cleaned_file: Path) -> Dict[str, Any]:
                         "best_model": nl.get("best_model", "unknown"),
                         "r2": float(nl.get("r2_test", nl.get("r2", 0))),
                         "n_samples": int(nl.get("n_samples", 0)),
-                        "model_name": f"PricingModel_{nl.get('binding_type', '')}__{nl.get('siren', '')}_NonLinear" if nl.get('binding_type') and nl.get('siren') else f"PricingModel_{nl.get('group', f'pair_{i}')}_NonLinear",
+                        "model_name": f"PricingModel_{nl.get('binding_type', '')}__{nl.get('siren', '')}_NonLinear" if nl.get(
+                            'binding_type') and nl.get(
+                            'siren') else f"PricingModel_{nl.get('group', f'pair_{i}')}_NonLinear",
                         "version": next((m["version"] for m in created_models if
                                          m.get("group") == nl.get("group") and
                                          m["type"] == "nonlinear"), None),
@@ -2423,19 +2228,20 @@ def run_couple_training(cleaned_file: Path) -> Dict[str, Any]:
             summary_path = tmp_path / "pair_models_summary.json"
             with open(summary_path, "w") as f:
                 json.dump(summary, f, indent=2)
-            mlflow.log_artifact(str(summary_path), "summary")
+            client.log_artifact(run_id, str(summary_path), "summary")
 
         print(
             f"\n✅ Models by pair completed: {len(linear_results)} linear, {len(nonlinear_results)} nonlinear")
         print(f"📦 Models registered in MLflow: {len(created_models)}")
-        print(
-            f"📊 MLflow Run: {mlflow.get_tracking_uri()}/#/experiments/{run.info.experiment_id}/runs/{run.info.run_id}")
+        if run_id:
+            print(
+                f"📊 MLflow Run: {mlflow.get_tracking_uri()}/#/experiments/{experiment_id}/runs/{run_id}")
 
         return {
             "n_linear": len(linear_results),
             "n_nonlinear": len(nonlinear_results),
-            "run_id": run.info.run_id,
-            "experiment_id": run.info.experiment_id,
+            "run_id": run_id,
+            "experiment_id": experiment_id,
             "linear_pairs": [
                 lin.get("group", f"pair_{i}") if isinstance(lin, dict) else f"pair_{i}" for
                 i, lin in enumerate(linear_results)],

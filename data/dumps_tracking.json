@@ -1,10 +1,10 @@
 {
-  "last_consolidation": "2026-03-11T03:49:01.440500",
+  "last_consolidation": "2026-03-12T01:52:31.038765",
   "last_sql_files": [
     "mysql_db_dump_2026_01_09_03_00_01 (1).sql"
   ],
   "stats": {
-    "total_conversions": 45,
-    "total_rows_processed": 404235
+    "total_conversions": 60,
+    "total_rows_processed": 538980
   }
 }

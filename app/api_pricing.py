@@ -1,4 +1,7 @@
-# api_pricing_final_v6.py
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+from pricing_epac import openssl_patch
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel, Field
 from typing import Optional, Dict, Any, List, Union
@@ -14,9 +17,19 @@ import uvicorn
 import traceback
 import re
 import time
+# Après les imports, avant le début du code
+import os
+
+# Configuration pour MinIO (S3 compatible)
+os.environ['AWS_ACCESS_KEY_ID'] = 'minio_admin'
+os.environ['AWS_SECRET_ACCESS_KEY'] = 'minio_password'
+os.environ['MLFLOW_S3_ENDPOINT_URL'] = 'http://localhost:9000'
+os.environ['AWS_DEFAULT_REGION'] = 'us-east-1'
+pd.set_option("display.max_columns", None)
+pd.set_option("display.float_format", "{:.4f}".format)
 
 # Configuration
-MLFLOW_TRACKING_URI = "http://127.0.0.1:5000"
+MLFLOW_TRACKING_URI = "http://localhost:5000"
 mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
 client = MlflowClient()
 
@@ -951,7 +964,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", type=str, default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8000)
-    parser.add_argument("--mlflow-uri", type=str, default="http://127.0.0.1:5000")
+    parser.add_argument("--mlflow-uri", type=str, default="http://localhost:5000")
     args = parser.parse_args()
 
     if args.mlflow_uri:
@@ -972,3 +985,53 @@ if __name__ == "__main__":
     print("=" * 60)
 
     uvicorn.run("api_pricing_final_v6:app", host=args.host, port=args.port)
+
+
+@app.get("/debug/mlflow")
+async def debug_mlflow():
+    """Endpoint de diagnostic MLflow"""
+    results = {}
+
+    try:
+        # 1. Vérifier la connexion
+        results["mlflow_uri"] = MLFLOW_TRACKING_URI
+        results["mlflow_connected"] = False
+
+        experiments = client.search_experiments()
+        results["mlflow_connected"] = True
+        results["experiments_count"] = len(experiments)
+
+        # 2. Vérifier PricingModelGlobal
+        try:
+            mv = client.get_model_version_by_alias(MODEL_NAME_GLOBAL, ALIAS_PRODUCTION)
+            if mv:
+                results["global_model"] = {
+                    "name": MODEL_NAME_GLOBAL,
+                    "version": mv.version,
+                    "alias": ALIAS_PRODUCTION,
+                    "run_id": mv.run_id,
+                    "status": mv.status
+                }
+
+                # Tester le chargement
+                model_uri = f"models:/{MODEL_NAME_GLOBAL}@{ALIAS_PRODUCTION}"
+                model = mlflow.pyfunc.load_model(model_uri)
+                results["global_model"]["loaded"] = True
+            else:
+                results["global_model"] = {"error": "No production alias"}
+        except Exception as e:
+            results["global_model"] = {"error": str(e)}
+
+        # 3. Vérifier ClientFeatures
+        try:
+            mv = client.get_model_version_by_alias(MODEL_NAME_CLIENT_FEATURES, ALIAS_PRODUCTION)
+            results["client_features_model"] = {
+                "exists": mv is not None,
+                "version": mv.version if mv else None
+            }
+        except:
+            results["client_features_model"] = {"exists": False}
+
+        return results
+    except Exception as e:
+        return {"error": str(e), "traceback": traceback.format_exc()}

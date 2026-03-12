@@ -22,15 +22,18 @@ data/consolidated/
 data/processed/
 data/enriched/
 data/features/
+data/pipeline_results
 *.xlsx
 *.csv
+# Authorise this file
+!data/raw/static/epac_historique.csv
 models/
 *.pkl
 *.joblib
 
 # MLflow et logs
 mlruns/
-mlflow.db
+
 *.log
 catboost_info/
 
@@ -44,3 +47,5 @@ __pycache__/
 tmp/
 temp/data/raw/dumps/sql/*.sql
 data/raw/dumps/sql/*.sql
+
+
