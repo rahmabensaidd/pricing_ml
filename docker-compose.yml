@@ -1,6 +1,22 @@
 version: '3.8'
 
+# Réseau commun pour tous les services
+networks:
+  epac_network:
+    driver: bridge
+
+# Volumes partagés
+volumes:
+  # MySQL data (votre volume existant)
+  mysql_data:
+  # Nouveaux volumes pour MLflow
+  postgres_mlflow_data:
+  minio_data:
+
 services:
+  # ============================================
+  # SERVICE 1 : MySQL pour le preprocessing
+  # ============================================
   mysql:
     image: mysql:8.0
     container_name: mysql-epac
@@ -12,7 +28,7 @@ services:
       MYSQL_CHARACTER_SET_SERVER: utf8mb4
       MYSQL_COLLATION_SERVER: utf8mb4_unicode_ci
     ports:
-      - "3307:3306"  # Changé à 3307 pour éviter conflit avec XAMPP
+      - "3307:3306"
     volumes:
       - mysql_data:/var/lib/mysql
     command:
@@ -26,6 +42,117 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - epac_network
 
-volumes:
-  mysql_data:
+  # ============================================
+  # SERVICE 2 : PostgreSQL pour les métadonnées MLflow
+  # ============================================
+  postgres-mlflow:
+    image: postgres:13
+    container_name: postgres-mlflow
+    environment:
+      POSTGRES_USER: mlflow_user
+      POSTGRES_PASSWORD: mlflow_password
+      POSTGRES_DB: mlflow_db
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_mlflow_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mlflow_user -d mlflow_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - epac_network
+    restart: unless-stopped
+
+  # ============================================
+  # SERVICE 3 : MinIO pour les artefacts MLflow
+  # ============================================
+  minio:
+    image: minio/minio:latest
+    container_name: minio-mlflow
+    environment:
+      MINIO_ROOT_USER: minio_admin
+      MINIO_ROOT_PASSWORD: minio_password
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - epac_network
+    restart: unless-stopped
+
+  # ============================================
+  # SERVICE 4 : Création automatique du bucket MinIO
+  # ============================================
+  create-bucket:
+    image: minio/mc:latest
+    container_name: minio-mc
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      echo '⏳ Attente que MinIO soit prêt...';
+      sleep 10;
+      echo '🔧 Configuration de MinIO client...';
+      until /usr/bin/mc alias set myminio http://minio:9000 minio_admin minio_password; do
+        echo '⏳ En attente de MinIO...';
+        sleep 2;
+      done;
+      echo '📦 Création du bucket mlflow-artifacts...';
+      /usr/bin/mc mb myminio/mlflow-artifacts --ignore-existing;
+      echo '🔓 Configuration des permissions...';
+      /usr/bin/mc anonymous set public myminio/mlflow-artifacts;
+      echo '✅ Bucket prêt !';
+      exit 0;
+      "
+    networks:
+      - epac_network
+
+  # ============================================
+  # SERVICE 5 : Serveur MLflow version 3.10.0
+  # ============================================
+  mlflow-server:
+    image: python:3.10-slim
+    container_name: mlflow-server
+    depends_on:
+      postgres-mlflow:
+        condition: service_healthy
+      create-bucket:
+        condition: service_completed_successfully
+    ports:
+      - "5000:5000"
+    environment:
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+      AWS_ACCESS_KEY_ID: minio_admin
+      AWS_SECRET_ACCESS_KEY: minio_password
+      AWS_DEFAULT_REGION: us-east-1
+    command: >
+      sh -c "
+      echo '📦 Installation des dépendances...' &&
+      apt-get update && apt-get install -y --no-install-recommends gcc libpq-dev &&
+      echo '📥 Installation de MLflow 3.10.0...' &&
+      pip install --no-cache-dir mlflow==3.10.0 psycopg2-binary boto3 &&
+      echo '✅ Dépendances installées' &&
+      echo '🚀 Démarrage du serveur MLflow...' &&
+      mlflow server
+      --backend-store-uri postgresql://mlflow_user:mlflow_password@postgres-mlflow:5432/mlflow_db
+      --default-artifact-root s3://mlflow-artifacts
+      --host 0.0.0.0
+      --port 5000
+      --serve-artifacts
+      "
+    networks:
+      - epac_network
+    restart: unless-stopped
