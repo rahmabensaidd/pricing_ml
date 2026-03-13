@@ -38,16 +38,20 @@ PID_FILE = PROJECT_ROOT / "data" / "watcher.pid"
 LOG_FILE = PROJECT_ROOT / "data" / "pipeline_output.log"
 RESULTS_DIR = PROJECT_ROOT / "data" / "pipeline_results"
 
+# Fichiers à ignorer (pour éviter les boucles)
+IGNORED_FILES = ["current_source.sql", "mysql_db_dump.sql"]
+
 
 class SQLFileHandler(FileSystemEventHandler):
     def __init__(self, mode="all"):
         self.processing = False
         self.pending_queue = queue.Queue()
         self.last_trigger = time.time()
-        self.mode = mode  # ← mode attribute is here in the handler
+        self.mode = mode
         self.current_process = None
         self.stop_monitoring = False
         self.processing_thread = None
+        self.processed_files = set()  # Garde trace des fichiers déjà traités
 
         RESULTS_DIR.mkdir(parents=True, exist_ok=True)
         PROCESSED_FOLDER.mkdir(parents=True, exist_ok=True)
@@ -111,6 +115,30 @@ class SQLFileHandler(FileSystemEventHandler):
             return
 
         file_name = Path(file_path).name
+
+        # IGNORER CERTAINS FICHIERS POUR ÉVITER LES BOUCLES
+        if file_name in IGNORED_FILES:
+            logger.info(f"⏭️ Ignoring {file_name} (system file)")
+            return
+
+        # Éviter de traiter plusieurs fois le même fichier
+        try:
+            file_stat = os.stat(file_path)
+            file_id = f"{file_path}_{file_stat.st_size}_{file_stat.st_mtime}"
+
+            if file_id in self.processed_files:
+                logger.info(f"⏭️ File already processed recently: {file_name}")
+                return
+
+            self.processed_files.add(file_id)
+
+            # Nettoyer l'ensemble périodiquement pour éviter la surcharge mémoire
+            if len(self.processed_files) > 100:
+                self.processed_files.clear()
+        except:
+            # En cas d'erreur de stat, on traite quand même
+            pass
+
         logger.info(f"➕ New SQL file: {file_name}")
         self.pending_queue.put(file_path)
         logger.info(f"📊 Queue: {self.pending_queue.qsize()}")
@@ -127,18 +155,18 @@ class SQLFileHandler(FileSystemEventHandler):
             env['MLFLOW_TRACKING_URI'] = 'http://localhost:5000'
             env['PYTHONUNBUFFERED'] = '1'
 
-            # Command with --input to use the specific file
             cmd = [
                 "poetry", "run", "python",
                 "-u",
                 "-m", "pricing_epac.flows.pricing_full_pipeline",
                 "--mode", self.mode,
                 "--input", str(sql_file),
-                "--once"  # To avoid automatic promotion
+                "--once"
             ]
 
             logger.info(f"📋 Command: {' '.join(cmd)}")
 
+            # SOLUTION ROBUSTE: Threads pour lire stdout et stderr en temps réel
             self.current_process = subprocess.Popen(
                 cmd,
                 cwd=PROJECT_ROOT,
@@ -147,42 +175,70 @@ class SQLFileHandler(FileSystemEventHandler):
                 env=env,
                 text=True,
                 encoding='utf-8',
-                bufsize=1
+                bufsize=1,
+                universal_newlines=True
             )
 
             pipeline_output = []
             has_errors = False
             start_time = time.time()
 
-            for line in self.current_process.stdout:
-                line = line.rstrip()
-                pipeline_output.append(line)
-                self._display_line(line)
-                if "ERROR" in line or "❌" in line:
-                    has_errors = True
+            def read_stream(stream, is_error=False):
+                nonlocal has_errors
+                for line in iter(stream.readline, ''):
+                    line = line.rstrip()
+                    pipeline_output.append(line)
+                    if is_error:
+                        logger.error(f"🔴 {line}")
+                        has_errors = True
+                    else:
+                        self._display_line(line)
+                stream.close()
 
-            for line in self.current_process.stderr:
-                line = line.rstrip()
-                pipeline_output.append(f"ERR: {line}")
-                logger.error(f"🔴 {line}")
-                has_errors = True
+            # Créer des threads pour lire stdout et stderr simultanément
+            stdout_thread = threading.Thread(target=read_stream, args=(self.current_process.stdout, False))
+            stderr_thread = threading.Thread(target=read_stream, args=(self.current_process.stderr, True))
 
+            stdout_thread.daemon = True
+            stderr_thread.daemon = True
+
+            stdout_thread.start()
+            stderr_thread.start()
+
+            # Attendre la fin du processus avec timeout
             return_code = self.current_process.wait(timeout=14400)
+
+            # Attendre que les threads de lecture finissent
+            stdout_thread.join(timeout=5)
+            stderr_thread.join(timeout=5)
+
             elapsed = time.time() - start_time
 
             if return_code == 0 and not has_errors:
                 logger.info(f"✅ SUCCESS in {elapsed / 60:.1f} minutes!")
                 self._save_results(pipeline_output, elapsed, sql_file)
 
-                # Move to processed
-                dest = PROCESSED_FOLDER / Path(sql_file).name
-                shutil.move(str(sql_file), str(dest))
-                logger.info(f"📁 File moved to: {dest}")
-            else:
-                logger.error(f"❌ FAILED after {elapsed / 60:.1f} minutes")
+                # NE PAS DÉPLACER LES FICHIERS IGNORÉS
+                if Path(sql_file).name not in IGNORED_FILES:
+                    dest = PROCESSED_FOLDER / Path(sql_file).name
 
+                    # Éviter de déplacer si c'est déjà dans processed
+                    if Path(sql_file).parent != PROCESSED_FOLDER:
+                        shutil.move(str(sql_file), str(dest))
+                        logger.info(f"📁 File moved to: {dest}")
+                    else:
+                        logger.info(f"📁 File already in processed folder")
+            else:
+                logger.error(f"❌ FAILED after {elapsed / 60:.1f} minutes with code {return_code}")
+
+        except subprocess.TimeoutExpired:
+            logger.error(f"❌ TIMEOUT after 4 hours")
+            if self.current_process:
+                self.current_process.kill()
         except Exception as e:
             logger.error(f"❌ Error: {e}")
+            import traceback
+            traceback.print_exc()
         finally:
             self.current_process = None
 
@@ -224,7 +280,7 @@ class SQLFileHandler(FileSystemEventHandler):
 class Watcher:
     def __init__(self, watch_path=None, mode="all"):
         self.watch_path = watch_path or SQL_FOLDER
-        self.mode = mode  # ← Added mode attribute here as well
+        self.mode = mode
         self.watch_path.mkdir(parents=True, exist_ok=True)
         self.observer = Observer()
         self.handler = SQLFileHandler(mode)
@@ -246,6 +302,7 @@ class Watcher:
         logger.info(f"📁 Monitored folder: {self.watch_path}")
         logger.info(f"📁 Processed folder: {PROCESSED_FOLDER}")
         logger.info(f"📊 Results: {RESULTS_DIR}")
+        logger.info(f"⏭️ Ignored files: {IGNORED_FILES}")
         logger.info("🛑 To stop: Ctrl+C\n")
 
         signal.signal(signal.SIGINT, self.signal_handler)
@@ -280,6 +337,7 @@ class Watcher:
 ⚡ Mode: {self.mode}
 📁 Processed: {PROCESSED_FOLDER}
 📊 Results: {RESULTS_DIR}
+⏭️ Ignored: {IGNORED_FILES}
 {'=' * 60}
 """
         logger.info(banner)
