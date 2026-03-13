@@ -62,6 +62,10 @@ data/raw/dumps/sql/*
 !data/pipeline_results/.gitkeep
 !data/raw/dumps/sql/.gitkeep
 
+# autoriser le dossier raw/static
+!data/raw/
+!data/raw/static/
+
 # fichier autorisé
 !data/raw/static/epac_historique.csv
 
