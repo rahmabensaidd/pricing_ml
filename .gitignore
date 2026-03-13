@@ -38,17 +38,18 @@ models/
 *.joblib
 
 # -----------------------
-# DATA (ignore contenu)
+# DATA - RÈGLES CLAIRES
 # -----------------------
 
-# fichiers de données
-# Ignorer tous les CSV sauf ceux dans static
+# 1. IGNORER TOUS LES CSV PAR DÉFAUT
 *.csv
-!data/raw/static/*.csv
-*.xlsx
-*.sql
 
-# dossiers data (contenu ignoré)
+# 2. EXCEPTIONS POUR LE DOSSIER STATIC
+!data/raw/static/
+!data/raw/static/**/*.csv
+!data/raw/static/.gitkeep
+
+# 3. IGNORER LE CONTENU DES AUTRES DOSSIERS DATA
 data/consolidated/*
 data/enriched/*
 data/features/*
@@ -56,7 +57,7 @@ data/processed/*
 data/pipeline_results/*
 data/raw/dumps/sql/*
 
-# garder la structure des dossiers
+# 4. GARDER LA STRUCTURE AVEC .gitkeep
 !data/consolidated/.gitkeep
 !data/enriched/.gitkeep
 !data/features/.gitkeep
@@ -64,17 +65,6 @@ data/raw/dumps/sql/*
 !data/pipeline_results/.gitkeep
 !data/raw/dumps/sql/.gitkeep
 
-# autoriser le dossier raw/static
-!data/raw/
-!data/raw/static/
-
-
-
-# Garder la structure des dossiers static
-data/raw/static/
-data/raw/static/*
-!data/raw/static/*.csv
-!data/raw/static/.gitkeep
 # -----------------------
 # DVC
 # -----------------------
