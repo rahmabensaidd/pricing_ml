@@ -1,4 +1,6 @@
+# -----------------------
 # Python
+# -----------------------
 __pycache__/
 *.py[cod]
 *.so
@@ -6,46 +8,71 @@ __pycache__/
 dist/
 build/
 
+# -----------------------
 # Environnements
-.venv
+# -----------------------
+.venv/
 env/
 venv/
 .env
 
+# -----------------------
 # IDE
+# -----------------------
 .idea/
 .vscode/
 *.swp
 
-# Données et modèles
-data/consolidated/
-data/processed/
-data/enriched/
-data/features/
-data/pipeline_results
-*.xlsx
-*.csv
-# Authorise this file
-!data/raw/static/epac_historique.csv
+# -----------------------
+# MLflow
+# -----------------------
+mlruns/
+catboost_info/
+*.log
+
+# -----------------------
+# Models
+# -----------------------
 models/
 *.pkl
 *.joblib
 
-# MLflow et logs
-mlruns/
+# -----------------------
+# DATA (ignore contenu)
+# -----------------------
 
-*.log
-catboost_info/
+# fichiers de données
+*.csv
+*.xlsx
+*.sql
 
+# dossiers data (contenu ignoré)
+data/consolidated/*
+data/enriched/*
+data/features/*
+data/processed/*
+data/pipeline_results/*
+data/raw/dumps/sql/*
+
+# garder la structure des dossiers
+!data/consolidated/.gitkeep
+!data/enriched/.gitkeep
+!data/features/.gitkeep
+!data/processed/.gitkeep
+!data/pipeline_results/.gitkeep
+!data/raw/dumps/sql/.gitkeep
+
+# fichier autorisé
+!data/raw/static/epac_historique.csv
+
+# -----------------------
 # DVC
+# -----------------------
 .dvc/tmp
 .dvc/cache
 
-# Temporaires
-__pycache__/
-*.pyc
+# -----------------------
+# Temp
+# -----------------------
 tmp/
-temp/data/raw/dumps/sql/*.sql
-data/raw/dumps/sql/*.sql
-
-
+temp/
