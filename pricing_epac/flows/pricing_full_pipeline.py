@@ -1,8 +1,11 @@
 import os
 import sys
-# Ajouter le chemin racine pour trouver openssl_patch
+
+from scripts.watcher import SQL_FOLDER
+
+# Add root path to find openssl_patch
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-from pricing_epac import openssl_patch  # ← IMPORT DU PATCH CENTRAL
+from pricing_epac import openssl_patch  # ← IMPORT OF CENTRAL PATCH
 from pathlib import Path
 from prefect import flow, task
 import subprocess
@@ -44,16 +47,16 @@ import re
 
 import platform
 from mlflow.models.signature import ModelSignature
-# Configuration pour MinIO (S3 compatible)
+# Configuration for MinIO (S3 compatible)
 import warnings
 
-# Désactiver pyOpenSSL dans urllib3 (même s'il n'est pas installé)
+# Disable pyOpenSSL in urllib3 (even if not installed)
 os.environ['URLLIB3_USE_PYOPENSSL'] = '0'
 warnings.filterwarnings('ignore', module='urllib3.contrib.pyopenssl')
 os.environ['AWS_ACCESS_KEY_ID'] = 'minio_admin'
 os.environ['AWS_SECRET_ACCESS_KEY'] = 'minio_password'
-os.environ['MLFLOW_S3_ENDPOINT_URL'] = 'http://localhost:9000'  # URL de MinIO
-os.environ['AWS_DEFAULT_REGION'] = 'us-east-1'  # Nécessaire pour boto3
+os.environ['MLFLOW_S3_ENDPOINT_URL'] = 'http://localhost:9000'  # MinIO URL
+os.environ['AWS_DEFAULT_REGION'] = 'us-east-1'  # Required for boto3
 # ────────────────────────────────────────────────
 # Configuration for client features
 # ────────────────────────────────────────────────
@@ -1119,7 +1122,26 @@ def mlflow_log_client_features(client_features: pd.DataFrame, cleaned_file: Path
 def consolidate_data_task() -> Path:
     """Data consolidation task"""
     print("🔄 Consolidating...")
-    path = run_consolidation()
+
+    # Check if a specific SQL file is requested via environment variable
+    sql_file = os.environ.get('PRICING_SQL_FILE')
+    if sql_file and os.path.exists(sql_file):
+        print(f"📁 Using specific SQL file: {sql_file}")
+        # If run_consolidation accepts a parameter
+        try:
+            path = run_consolidation(sql_file_path=sql_file)
+        except TypeError:
+            # If run_consolidation doesn't accept parameters, copy the file
+            # to the default location
+            default_sql_dir = PROJECT_ROOT / "data" / "raw" / "dumps" / "sql"
+            default_sql_dir.mkdir(parents=True, exist_ok=True)
+            target = default_sql_dir / "mysql_db_dump.sql"
+            shutil.copy2(sql_file, target)
+            print(f"📋 File copied to: {target}")
+            path = run_consolidation()
+    else:
+        path = run_consolidation()
+
     print(f"✅ Consolidation completed → {path}")
     return path
 
@@ -1168,18 +1190,18 @@ def run_global_training(cleaned_file: Path, sample_X: pd.DataFrame) -> Dict[str,
     input_dvc_hash = compute_dvc_hash(cleaned_file)
     print(f"\n🔗 Input data DVC hash: {input_dvc_hash}")
 
-    # UN SEUL RUN PARENT - tout sera loggé dans ce contexte
+    # SINGLE PARENT RUN - everything will be logged in this context
     with mlflow.start_run(run_name=run_name) as run:
         print(f"Run ID       : {run.info.run_id}")
         print(f"Experiment ID: {run.info.experiment_id}")
 
-        # === TAGS DU RUN PARENT ===
+        # === PARENT RUN TAGS ===
         mlflow.set_tag("model_type", "global")
         mlflow.set_tag("git_commit", get_git_commit_hash())
         mlflow.set_tag("run_name", run_name)
         mlflow.set_tag("input_data_dvc_hash", input_dvc_hash)
 
-        # === PARAMÈTRES ===
+        # === PARAMETERS ===
         mlflow.log_params({
             "features_count": len(RAW_FEATURES),
             "num_features": len(NUM_VARS),
@@ -1188,12 +1210,12 @@ def run_global_training(cleaned_file: Path, sample_X: pd.DataFrame) -> Dict[str,
             "input_data_dvc_hash": input_dvc_hash
         })
 
-        # Appel à train_and_compare AVEC LE RUN EXISTANT
-        # Cela empêchera train_and_compare de créer un nouveau run
+        # Call train_and_compare WITH THE EXISTING RUN
+        # This will prevent train_and_compare from creating a new run
         best_name, results, best_pipe, X_test, y_test, _, feature_importance, feature_importance_json = train_and_compare(
             str(cleaned_file),
             register_to_mlflow=True,
-            mlflow_run=run  # ← Passage du run existant pour éviter la duplication
+            mlflow_run=run  # ← Passing existing run to avoid duplication
         )
 
         best_metrics = {}
@@ -1204,8 +1226,8 @@ def run_global_training(cleaned_file: Path, sample_X: pd.DataFrame) -> Dict[str,
                 "r2": best['r2'],
                 "mae": best['mae'],
             }
-            # Note: les métriques sont déjà loggées dans _log_training_to_mlflow
-            # mais on les logge aussi au niveau parent pour visibilité
+            # Note: metrics are already logged in _log_training_to_mlflow
+            # but we also log them at parent level for visibility
             mlflow.log_metrics(best_metrics)
 
         print("\n📊 Creating model comparison table...")
@@ -1309,22 +1331,22 @@ def run_global_training(cleaned_file: Path, sample_X: pd.DataFrame) -> Dict[str,
         if feature_importance:
             model_metadata["feature_importance"] = feature_importance
 
-        # Note: le modèle est DÉJÀ enregistré dans _log_training_to_mlflow
-        # On récupère la version depuis les tags ou on laisse la fonction interne gérer
+        # Note: the model is ALREADY registered in _log_training_to_mlflow
+        # We retrieve the version from tags or let the internal function handle it
 
-        # Récupérer la version du modèle depuis le client MLflow
+        # Retrieve model version from MLflow client
         version = None
         try:
             client = MlflowClient()
-            # Chercher la dernière version du modèle
+            # Search for the latest model version
             latest_versions = client.get_latest_versions(MLFLOW_MODEL_NAME_GLOBAL, stages=["None"])
             if latest_versions:
-                # Prendre la plus récente (celle qui vient d'être créée)
+                # Take the most recent one (the one just created)
                 version = latest_versions[-1].version
         except:
             pass
 
-        # Si pas de version trouvée, on utilise None
+        # If no version found, use None
         if version:
             # Save model temporarily to compute its hash
             temp_model_path = MODELS_DIR / f"temp_global_model_v{version}.joblib"
@@ -1349,7 +1371,7 @@ def run_global_training(cleaned_file: Path, sample_X: pd.DataFrame) -> Dict[str,
                 )
                 print(f"   ✅ Description added to version {version}")
 
-                # Tags supplémentaires pour la version du modèle
+                # Additional tags for model version
                 additional_tags = {
                     TAG_LIFECYCLE_STATUS: "new",
                     TAG_TRAINING_DATE: datetime.now().isoformat(),
@@ -1372,7 +1394,7 @@ def run_global_training(cleaned_file: Path, sample_X: pd.DataFrame) -> Dict[str,
                     additional_tags[TAG_PERFORMANCE_RMSE] = str(best_metrics["rmse"])
                     additional_tags[TAG_PERFORMANCE_R2] = str(best_metrics["r2"])
 
-                # Mettre à jour les tags (sans écraser ceux déjà définis)
+                # Update tags (without overwriting already defined ones)
                 set_model_version_tags(MLFLOW_MODEL_NAME_GLOBAL, int(version), additional_tags)
 
             except Exception as e:
@@ -1406,6 +1428,7 @@ def run_global_training(cleaned_file: Path, sample_X: pd.DataFrame) -> Dict[str,
             },
             "dvc_tracking_file": str(dvc_tracking_file) if version else None
         }
+
 
 @task(name="Create Client Features", retries=1)
 def create_client_features_task(cleaned_file: Path) -> Tuple[Path, pd.DataFrame, pd.DataFrame, Dict[str, Any]]:
@@ -1556,8 +1579,8 @@ def run_family_training(cleaned_file: Path) -> Dict[str, Any]:
     input_dvc_hash = compute_dvc_hash(cleaned_file)
     print(f"\n🔗 Input data DVC hash: {input_dvc_hash}")
 
-    # NE PAS créer de run ici - train_by_bindingtype va le faire
-    # On va juste récupérer les infos du run depuis training_results
+    # DO NOT create a run here - train_by_bindingtype will do it
+    # We'll just retrieve run info from training_results
 
     # Create a list to store models registered in MLflow
     mlflow_created_models = []
@@ -1566,7 +1589,7 @@ def run_family_training(cleaned_file: Path) -> Dict[str, Any]:
         tmp_path = Path(tmp_dir)
 
         print("   🔄 Launching train_by_bindingtype...")
-        # train_by_bindingtype va créer son propre run MLflow
+        # train_by_bindingtype will create its own MLflow run
         training_results = train_by_bindingtype(
             file_path=str(cleaned_file),
             run_linear=True,
@@ -1574,10 +1597,10 @@ def run_family_training(cleaned_file: Path) -> Dict[str, Any]:
             min_samples=50,
             save_pipelines=True,
             output_dir=tmp_path,
-            register_to_mlflow=True  # ← C'est ici que le run est créé
+            register_to_mlflow=True  # ← This is where the run is created
         )
 
-        # Récupérer les informations du run depuis training_results
+        # Retrieve run information from training_results
         run_id = training_results.get("run_id")
         experiment_id = training_results.get("experiment_id")
         run_name = training_results.get("run_name", "family-training")
@@ -1592,23 +1615,23 @@ def run_family_training(cleaned_file: Path) -> Dict[str, Any]:
         if run_id:
             client = MlflowClient()
 
-            # === CONSERVER TOUS LES TAGS DU RUN PARENT ===
-            # Tags déjà définis dans train_by_bindingtype
+            # === KEEP ALL PARENT RUN TAGS ===
+            # Tags already set in train_by_bindingtype
             client.set_tag(run_id, "model_type", "family")
             client.set_tag(run_id, "git_commit", get_git_commit_hash())
             client.set_tag(run_id, "run_name", run_name)
             client.set_tag(run_id, "input_data_dvc_hash", input_dvc_hash)
 
-            # Paramètres
+            # Parameters
             client.log_param(run_id, "input_data_dvc_hash", input_dvc_hash)
 
-            # Métriques globales
+            # Global metrics
             client.log_metric(run_id, "n_families_linear", len(training_results["linear"]))
             client.log_metric(run_id, "n_families_nonlinear", len(training_results["nonlinear"]))
             client.log_metric(run_id, "total_families",
                               len(training_results["linear"]) + len(training_results["nonlinear"]))
 
-            # Traitement des modèles linéaires
+            # Processing linear models
             print(f"   📊 Processing {len(training_results['linear'])} linear families...")
 
             linear_comparison_data = []
@@ -1663,7 +1686,7 @@ def run_family_training(cleaned_file: Path) -> Dict[str, Any]:
                             f.write(lin["formula"])
                         client.log_artifact(run_id, str(formula_path), f"families/{family}/linear")
 
-                    # Récupérer les infos de version depuis local_created_models
+                    # Retrieve version info from local_created_models
                     version = None
                     dvc_tracking_file = None
                     for m in local_created_models:
@@ -1688,7 +1711,7 @@ def run_family_training(cleaned_file: Path) -> Dict[str, Any]:
                 except Exception as e:
                     print(f"   ⚠️ Error versioning {family} linear: {e}")
 
-            # Traitement des modèles non-linéaires
+            # Processing nonlinear models
             print(f"   📊 Processing {len(training_results['nonlinear'])} nonlinear families...")
 
             nonlinear_comparison_data = []
@@ -1743,7 +1766,7 @@ def run_family_training(cleaned_file: Path) -> Dict[str, Any]:
                             json.dump(fi_serializable, f, indent=2)
                         client.log_artifact(run_id, str(fi_path), f"families/{family}/nonlinear")
 
-                    # Récupérer les infos de version depuis local_created_models
+                    # Retrieve version info from local_created_models
                     version = None
                     dvc_tracking_file = None
                     for m in local_created_models:
@@ -1769,7 +1792,7 @@ def run_family_training(cleaned_file: Path) -> Dict[str, Any]:
                 except Exception as e:
                     print(f"   ⚠️ Error versioning {family} nonlinear: {e}")
 
-            # Création et log du résumé
+            # Create and log summary
             summary = {
                 "timestamp": datetime.now().isoformat(),
                 "run_id": run_id,
@@ -1842,8 +1865,8 @@ def run_couple_training(cleaned_file: Path) -> Dict[str, Any]:
     input_dvc_hash = compute_dvc_hash(cleaned_file)
     print(f"\n🔗 Input data DVC hash: {input_dvc_hash}")
 
-    # NE PAS créer de run ici - train_by_bindingtype_siren va le faire
-    # On va juste récupérer les infos du run depuis training_results
+    # DO NOT create a run here - train_by_bindingtype_siren will do it
+    # We'll just retrieve run info from training_results
 
     created_models = []
 
@@ -1852,7 +1875,7 @@ def run_couple_training(cleaned_file: Path) -> Dict[str, Any]:
 
         print("   🔄 Launching train_by_bindingtype_siren...")
 
-        # Execute training function - ELLE VA CRÉER SON PROPRE RUN
+        # Execute training function - IT WILL CREATE ITS OWN RUN
         try:
             results = train_by_bindingtype_siren(
                 file_path=str(cleaned_file),
@@ -1879,7 +1902,7 @@ def run_couple_training(cleaned_file: Path) -> Dict[str, Any]:
                 "input_data_dvc_hash": input_dvc_hash
             }
 
-        # Récupérer les informations du run depuis results
+        # Retrieve run information from results
         run_id = results.get("run_id")
         experiment_id = results.get("experiment_id")
         run_name = results.get("run_name", "couple-training")
@@ -1904,16 +1927,16 @@ def run_couple_training(cleaned_file: Path) -> Dict[str, Any]:
         if run_id:
             client = MlflowClient()
 
-            # === CONSERVER TOUS LES TAGS DU RUN PARENT ===
+            # === KEEP ALL PARENT RUN TAGS ===
             client.set_tag(run_id, "model_type", "couple")
             client.set_tag(run_id, "git_commit", get_git_commit_hash())
             client.set_tag(run_id, "run_name", run_name)
             client.set_tag(run_id, "input_data_dvc_hash", input_dvc_hash)
 
-            # Paramètres
+            # Parameters
             client.log_param(run_id, "input_data_dvc_hash", input_dvc_hash)
 
-            # Métriques globales
+            # Global metrics
             client.log_metric(run_id, "n_pairs_linear", len(linear_results))
             client.log_metric(run_id, "n_pairs_nonlinear", len(nonlinear_results))
             client.log_metric(run_id, "total_pairs", len(linear_results) + len(nonlinear_results))
@@ -1981,7 +2004,7 @@ def run_couple_training(cleaned_file: Path) -> Dict[str, Any]:
                         print(f"   ⚠️ No group found for linear model {idx}")
                         continue
 
-                    # Extraire binding_type et siren du group
+                    # Extract binding_type and siren from group
                     if '__' in group:
                         parts = group.split('__')
                         binding_type = parts[0] if len(parts) > 0 else ""
@@ -1990,13 +2013,13 @@ def run_couple_training(cleaned_file: Path) -> Dict[str, Any]:
                         binding_type = group
                         siren = ""
 
-                    # Créer le nom au format souhaité
+                    # Create name in desired format
                     if siren:
                         model_name = f"PricingModel_{binding_type}__{siren}_Linear"
                     else:
                         model_name = f"PricingModel_{binding_type}_Linear"
 
-                    # Récupérer le pipeline et les métriques
+                    # Retrieve pipeline and metrics
                     pipeline = lin.get("pipeline")
                     cv_r2 = float(lin.get("cv_r2", 0))
                     n_samples = int(lin.get("n_samples", 0))
@@ -2034,7 +2057,7 @@ def run_couple_training(cleaned_file: Path) -> Dict[str, Any]:
                             f.write(formula)
                         client.log_artifact(run_id, str(formula_path), f"pairs/{group}/linear")
 
-                    # Récupérer les infos de version depuis created_models_from_training
+                    # Retrieve version info from created_models_from_training
                     version = None
                     dvc_tracking_file = None
                     for m in created_models_from_training:
@@ -2082,7 +2105,7 @@ def run_couple_training(cleaned_file: Path) -> Dict[str, Any]:
                         print(f"   ⚠️ No group found for nonlinear model {idx}")
                         continue
 
-                    # Extraire binding_type et siren du group
+                    # Extract binding_type and siren from group
                     if '__' in group:
                         parts = group.split('__')
                         binding_type = parts[0] if len(parts) > 0 else ""
@@ -2091,13 +2114,13 @@ def run_couple_training(cleaned_file: Path) -> Dict[str, Any]:
                         binding_type = group
                         siren = ""
 
-                    # Créer le nom au format souhaité
+                    # Create name in desired format
                     if siren:
                         model_name = f"PricingModel_{binding_type}__{siren}_NonLinear"
                     else:
                         model_name = f"PricingModel_{binding_type}_NonLinear"
 
-                    # Récupérer le pipeline et les métriques
+                    # Retrieve pipeline and metrics
                     pipeline = nl.get("pipeline")
                     r2 = float(nl.get("r2_test", nl.get("r2", 0)))
                     n_samples = int(nl.get("n_samples", 0))
@@ -2142,7 +2165,7 @@ def run_couple_training(cleaned_file: Path) -> Dict[str, Any]:
                             json.dump(fi_serializable, f, indent=2)
                         client.log_artifact(run_id, str(fi_path), f"pairs/{group}/nonlinear")
 
-                    # Récupérer les infos de version depuis created_models_from_training
+                    # Retrieve version info from created_models_from_training
                     version = None
                     dvc_tracking_file = None
                     for m in created_models_from_training:
@@ -2253,6 +2276,7 @@ def run_couple_training(cleaned_file: Path) -> Dict[str, Any]:
             "summary": summary,
             "input_data_dvc_hash": input_dvc_hash
         }
+
 
 # ────────────────────────────────────────────────
 # Model promotion (WITH CLIENT FEATURES IN PRODUCTION)
@@ -2695,13 +2719,18 @@ def pricing_mlops_pipeline(
 # ────────────────────────────────────────────────
 # ENTRY POINT
 # ────────────────────────────────────────────────
+# ────────────────────────────────────────────────
+# ENTRY POINT (MODIFIED TO ACCEPT --input)
+# ────────────────────────────────────────────────
 if __name__ == "__main__":
     import argparse
+    import shutil
 
     parser = argparse.ArgumentParser(description="Pricing MLOPS Pipeline with DVC tracking")
     parser.add_argument("--mode", type=str, default="all",
                         choices=["all", "global", "family", "couple", "features"],
                         help="Execution mode")
+    parser.add_argument("--input", type=str, help="Specific SQL file to process (optional)")
     parser.add_argument("--no-consolidation", action="store_true",
                         help="Do not run consolidation")
     parser.add_argument("--no-client-features", action="store_true",
@@ -2723,6 +2752,29 @@ if __name__ == "__main__":
     print(f"📌 Client Features: {'NO' if args.no_client_features else 'YES'}")
     print(f"📌 Automatic production alias configuration: {'NO' if args.no_promote else 'YES'}")
     print(f"📌 DVC Tracking: YES")
+
+    # === NEW: Handling specific SQL file ===
+    if args.input:
+        input_file = Path(args.input)
+        if not input_file.exists():
+            print(f"❌ SQL file not found: {input_file}")
+            sys.exit(1)
+
+        print(f"📁 Specific SQL file: {input_file}")
+
+        # Create SQL folder if it doesn't exist
+        SQL_FOLDER.mkdir(parents=True, exist_ok=True)
+
+        # Copy the file to the location expected by the pipeline
+        target_file = SQL_FOLDER / "current_source.sql"
+        print(f"📋 Copying to: {target_file}")
+        shutil.copy2(input_file, target_file)
+
+        # Optionally, create a symbolic link or copy to a standard name
+        # that your run_consolidation function expects
+
+        # Set an environment variable so that other functions can use it
+        os.environ['PRICING_SQL_FILE'] = str(input_file)
 
     should_promote = not args.no_promote and not args.once
     run_client_features = not args.no_client_features
