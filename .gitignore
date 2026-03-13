@@ -1,0 +1,88 @@
+# -----------------------
+# Python
+# -----------------------
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+dist/
+build/
+
+# -----------------------
+# Environnements
+# -----------------------
+.venv/
+env/
+venv/
+.env
+
+# -----------------------
+# IDE
+# -----------------------
+.idea/
+.vscode/
+*.swp
+
+# -----------------------
+# MLflow
+# -----------------------
+mlruns/
+catboost_info/
+*.log
+
+# -----------------------
+# Models
+# -----------------------
+models/
+*.pkl
+*.joblib
+
+# -----------------------
+# DATA (ignore contenu)
+# -----------------------
+
+# fichiers de données
+# Ignorer tous les CSV sauf ceux dans static
+*.csv
+!data/raw/static/*.csv
+*.xlsx
+*.sql
+
+# dossiers data (contenu ignoré)
+data/consolidated/*
+data/enriched/*
+data/features/*
+data/processed/*
+data/pipeline_results/*
+data/raw/dumps/sql/*
+
+# garder la structure des dossiers
+!data/consolidated/.gitkeep
+!data/enriched/.gitkeep
+!data/features/.gitkeep
+!data/processed/.gitkeep
+!data/pipeline_results/.gitkeep
+!data/raw/dumps/sql/.gitkeep
+
+# autoriser le dossier raw/static
+!data/raw/
+!data/raw/static/
+
+
+
+# Garder la structure des dossiers static
+data/raw/static/
+data/raw/static/*
+!data/raw/static/*.csv
+!data/raw/static/.gitkeep
+# -----------------------
+# DVC
+# -----------------------
+.dvc/tmp
+.dvc/cache
+
+# -----------------------
+# Temp
+# -----------------------
+tmp/
+temp/

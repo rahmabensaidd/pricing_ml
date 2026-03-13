@@ -1,0 +1,39 @@
+schema: '2.0'
+stages:
+  preprocess:
+    cmd: poetry run python pricing_epac/preprocessing/full_preprocess.py
+    deps:
+    - path: data/raw/concateneRAHMA4.xlsx
+      hash: md5
+      md5: 557b5925cb870880342499aba5f1ab0d
+      size: 6132488
+    - path: pricing_epac/preprocessing/full_preprocess.py
+      hash: md5
+      md5: 6b583ffe42ee86c0e9d1877797d6ecec
+      size: 21766
+    outs:
+    - path: data/processed/pricing_fully_cleaned.xlsx
+      hash: md5
+      md5: 24521d186f4c147e764cb40bc6b984ec
+      size: 3215271
+  train:
+    cmd: poetry run python pricing_epac/models/train_and_compare.py
+    deps:
+    - path: data/processed/pricing_fully_cleaned.xlsx
+      hash: md5
+      md5: 24521d186f4c147e764cb40bc6b984ec
+      size: 3215271
+    - path: pricing_epac/models/cover_size_pipeline.pkl
+      hash: md5
+      md5: 2c6bac08d6ece5252622f2b9465bb1c2
+      size: 1273914
+    - path: pricing_epac/models/train_and_compare.py
+      hash: md5
+      md5: fe51238be7b934a076d4ca6f7c3ccfae
+      size: 11037
+    outs:
+    - path: models/
+      hash: md5
+      md5: d3e3990d393d3c01b2cb4c053edbeb98.dir
+      size: 1692663
+      nfiles: 3
