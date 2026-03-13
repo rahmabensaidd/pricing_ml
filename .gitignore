@@ -1,4 +1,6 @@
+# -----------------------
 # Python
+# -----------------------
 __pycache__/
 *.py[cod]
 *.so
@@ -6,40 +8,71 @@ __pycache__/
 dist/
 build/
 
+# -----------------------
 # Environnements
-.venv
+# -----------------------
+.venv/
 env/
 venv/
 .env
 
+# -----------------------
 # IDE
+# -----------------------
 .idea/
 .vscode/
 *.swp
 
-# Données et modèles
-data/consolidated/
-data/processed/
-data/enriched/
-data/features/
-*.xlsx
-*.csv
+# -----------------------
+# MLflow
+# -----------------------
+mlruns/
+catboost_info/
+*.log
+
+# -----------------------
+# Models
+# -----------------------
 models/
 *.pkl
 *.joblib
 
-# MLflow et logs
-mlruns/
-mlflow.db
-*.log
-catboost_info/
+# -----------------------
+# DATA - RÈGLES CLAIRES
+# -----------------------
 
+# 1. IGNORER TOUS LES CSV PAR DÉFAUT
+*.csv
+
+# 2. EXCEPTIONS POUR LE DOSSIER STATIC
+!data/raw/static/
+!data/raw/static/**/*.csv
+!data/raw/static/.gitkeep
+
+# 3. IGNORER LE CONTENU DES AUTRES DOSSIERS DATA
+data/consolidated/*
+data/enriched/*
+data/features/*
+data/processed/*
+data/pipeline_results/*
+data/raw/dumps/sql/*
+
+# 4. GARDER LA STRUCTURE AVEC .gitkeep
+!data/consolidated/.gitkeep
+!data/enriched/.gitkeep
+!data/features/.gitkeep
+!data/processed/.gitkeep
+!data/pipeline_results/.gitkeep
+!data/raw/dumps/sql/.gitkeep
+
+# -----------------------
 # DVC
+# -----------------------
 .dvc/tmp
 .dvc/cache
 
-# Temporaires
-__pycache__/
-*.pyc
+# -----------------------
+# Temp
+# -----------------------
 tmp/
-temp/data/raw/dumps/sql/*.sql
+temp/

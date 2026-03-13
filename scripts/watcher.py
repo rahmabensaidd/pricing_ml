@@ -8,6 +8,12 @@ from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 import subprocess
 import os
+import json
+from datetime import datetime
+import signal
+import threading
+import queue
+import shutil
 
 logging.basicConfig(
     level=logging.INFO,
@@ -17,23 +23,66 @@ logging.basicConfig(
 )
 
 if sys.platform == 'win32':
-    sys.stdout.reconfigure(encoding='utf-8')
-    sys.stderr.reconfigure(encoding='utf-8')
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
+    except:
+        pass
 
 logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SQL_FOLDER = PROJECT_ROOT / "data" / "raw" / "dumps" / "sql"
+PROCESSED_FOLDER = PROJECT_ROOT / "data" / "raw" / "dumps" / "processed"
 PID_FILE = PROJECT_ROOT / "data" / "watcher.pid"
-MODE_FILE = PROJECT_ROOT / "data" / "watcher_mode.txt"
+LOG_FILE = PROJECT_ROOT / "data" / "pipeline_output.log"
+RESULTS_DIR = PROJECT_ROOT / "data" / "pipeline_results"
+
+# Fichiers à ignorer (pour éviter les boucles)
+IGNORED_FILES = ["current_source.sql", "mysql_db_dump.sql"]
 
 
 class SQLFileHandler(FileSystemEventHandler):
     def __init__(self, mode="all"):
         self.processing = False
-        self.pending_files = set()
+        self.pending_queue = queue.Queue()
         self.last_trigger = time.time()
         self.mode = mode
+        self.current_process = None
+        self.stop_monitoring = False
+        self.processing_thread = None
+        self.processed_files = set()  # Garde trace des fichiers déjà traités
+
+        RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+        PROCESSED_FOLDER.mkdir(parents=True, exist_ok=True)
+
+        self.start_processing_thread()
+
+    def start_processing_thread(self):
+        self.processing_thread = threading.Thread(target=self._process_queue, daemon=True)
+        self.processing_thread.start()
+        logger.info("🔄 Processing thread started")
+
+    def _process_queue(self):
+        while not self.stop_monitoring:
+            try:
+                sql_file = self.pending_queue.get(timeout=1)
+
+                if sql_file is None:
+                    break
+
+                self.processing = True
+                try:
+                    if self.wait_for_file_ready(sql_file):
+                        self.run_pipeline(sql_file)
+                except Exception as e:
+                    logger.error(f"❌ Error: {e}")
+                finally:
+                    self.processing = False
+                    self.pending_queue.task_done()
+
+            except queue.Empty:
+                continue
 
     def wait_for_file_ready(self, file_path, max_retries=10, delay=1):
         for i in range(max_retries):
@@ -43,11 +92,10 @@ class SQLFileHandler(FileSystemEventHandler):
                 size1 = os.path.getsize(file_path)
                 time.sleep(0.5)
                 size2 = os.path.getsize(file_path)
-                if size1 == size2:
-                    logger.info(f"✅ Fichier prêt: {Path(file_path).name} ({size1} bytes)")
+                if size1 == size2 and size1 > 0:
+                    logger.info(f"✅ File ready: {Path(file_path).name}")
                     return True
-            except (IOError, OSError) as e:
-                logger.debug(f"⏳ Fichier pas encore prêt ({i + 1}/{max_retries}): {e}")
+            except:
                 time.sleep(delay)
         return False
 
@@ -63,46 +111,63 @@ class SQLFileHandler(FileSystemEventHandler):
                 self.handle_new_sql_file(event.src_path)
 
     def handle_new_sql_file(self, file_path):
-        if self.processing:
-            self.pending_files.add(file_path)
-            logger.info(f"⏳ Pipeline en cours, fichier mis en attente: {Path(file_path).name}")
+        if not os.path.exists(file_path):
             return
 
-        self.processing = True
-        try:
-            logger.info(f"🎯 Nouveau fichier SQL détecté: {Path(file_path).name}")
-            if not self.wait_for_file_ready(file_path):
-                logger.error(f"❌ Impossible d'accéder au fichier {Path(file_path).name}")
-                return
-            self.run_pipeline()
-            while self.pending_files:
-                time.sleep(2)
-                self.pending_files.clear()
-                self.run_pipeline()
-        except Exception as e:
-            logger.error(f"❌ Erreur: {e}")
-        finally:
-            self.processing = False
+        file_name = Path(file_path).name
 
-    def run_pipeline(self):
+        # IGNORER CERTAINS FICHIERS POUR ÉVITER LES BOUCLES
+        if file_name in IGNORED_FILES:
+            logger.info(f"⏭️ Ignoring {file_name} (system file)")
+            return
+
+        # Éviter de traiter plusieurs fois le même fichier
         try:
-            logger.info(f"🚀 Lancement du pipeline en mode: {self.mode} (séquentiel)...")
+            file_stat = os.stat(file_path)
+            file_id = f"{file_path}_{file_stat.st_size}_{file_stat.st_mtime}"
+
+            if file_id in self.processed_files:
+                logger.info(f"⏭️ File already processed recently: {file_name}")
+                return
+
+            self.processed_files.add(file_id)
+
+            # Nettoyer l'ensemble périodiquement pour éviter la surcharge mémoire
+            if len(self.processed_files) > 100:
+                self.processed_files.clear()
+        except:
+            # En cas d'erreur de stat, on traite quand même
+            pass
+
+        logger.info(f"➕ New SQL file: {file_name}")
+        self.pending_queue.put(file_path)
+        logger.info(f"📊 Queue: {self.pending_queue.qsize()}")
+
+    def run_pipeline(self, sql_file):
+        try:
+            self._print_separator()
+            logger.info(f"📊 START - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            logger.info(f"📁 File: {Path(sql_file).name}")
+            self._print_separator()
+
             env = os.environ.copy()
             env['PYTHONIOENCODING'] = 'utf-8'
-            env['PYTHONUTF8'] = '1'
-            env['MLFLOW_TRACKING_URI'] = str(PROJECT_ROOT / 'mlruns')
+            env['MLFLOW_TRACKING_URI'] = 'http://localhost:5000'
+            env['PYTHONUNBUFFERED'] = '1'
 
-            # Appeler le pipeline séquentiel
             cmd = [
                 "poetry", "run", "python",
+                "-u",
                 "-m", "pricing_epac.flows.pricing_full_pipeline",
                 "--mode", self.mode,
+                "--input", str(sql_file),
                 "--once"
             ]
 
-            logger.info(f"📋 Commande: {' '.join(cmd)}")
+            logger.info(f"📋 Command: {' '.join(cmd)}")
 
-            process = subprocess.Popen(
+            # SOLUTION ROBUSTE: Threads pour lire stdout et stderr en temps réel
+            self.current_process = subprocess.Popen(
                 cmd,
                 cwd=PROJECT_ROOT,
                 stdout=subprocess.PIPE,
@@ -110,59 +175,137 @@ class SQLFileHandler(FileSystemEventHandler):
                 env=env,
                 text=True,
                 encoding='utf-8',
-                bufsize=1
+                bufsize=1,
+                universal_newlines=True
             )
 
-            for line in process.stdout:
-                logger.info(f"[PIPELINE] {line.rstrip()}")
-            for line in process.stderr:
-                logger.error(f"[PIPELINE-ERR] {line.rstrip()}")
+            pipeline_output = []
+            has_errors = False
+            start_time = time.time()
 
-            return_code = process.wait(timeout=14400)  # 4 heures max
+            def read_stream(stream, is_error=False):
+                nonlocal has_errors
+                for line in iter(stream.readline, ''):
+                    line = line.rstrip()
+                    pipeline_output.append(line)
+                    if is_error:
+                        logger.error(f"🔴 {line}")
+                        has_errors = True
+                    else:
+                        self._display_line(line)
+                stream.close()
 
-            if return_code == 0:
-                logger.info(f"✅ Pipeline ({self.mode}) terminé avec succès")
-                logger.info(f"📊 Résultats: poetry run mlflow ui --port 5000")
+            # Créer des threads pour lire stdout et stderr simultanément
+            stdout_thread = threading.Thread(target=read_stream, args=(self.current_process.stdout, False))
+            stderr_thread = threading.Thread(target=read_stream, args=(self.current_process.stderr, True))
+
+            stdout_thread.daemon = True
+            stderr_thread.daemon = True
+
+            stdout_thread.start()
+            stderr_thread.start()
+
+            # Attendre la fin du processus avec timeout
+            return_code = self.current_process.wait(timeout=14400)
+
+            # Attendre que les threads de lecture finissent
+            stdout_thread.join(timeout=5)
+            stderr_thread.join(timeout=5)
+
+            elapsed = time.time() - start_time
+
+            if return_code == 0 and not has_errors:
+                logger.info(f"✅ SUCCESS in {elapsed / 60:.1f} minutes!")
+                self._save_results(pipeline_output, elapsed, sql_file)
+
+                # NE PAS DÉPLACER LES FICHIERS IGNORÉS
+                if Path(sql_file).name not in IGNORED_FILES:
+                    dest = PROCESSED_FOLDER / Path(sql_file).name
+
+                    # Éviter de déplacer si c'est déjà dans processed
+                    if Path(sql_file).parent != PROCESSED_FOLDER:
+                        shutil.move(str(sql_file), str(dest))
+                        logger.info(f"📁 File moved to: {dest}")
+                    else:
+                        logger.info(f"📁 File already in processed folder")
             else:
-                logger.error(f"❌ Pipeline échoué (code {return_code})")
+                logger.error(f"❌ FAILED after {elapsed / 60:.1f} minutes with code {return_code}")
 
+        except subprocess.TimeoutExpired:
+            logger.error(f"❌ TIMEOUT after 4 hours")
+            if self.current_process:
+                self.current_process.kill()
         except Exception as e:
-            logger.error(f"❌ Erreur: {e}")
+            logger.error(f"❌ Error: {e}")
+            import traceback
+            traceback.print_exc()
+        finally:
+            self.current_process = None
+
+    def _display_line(self, line):
+        if "ERROR" in line or "❌" in line:
+            logger.error(f"❌ {line}")
+        elif "WARNING" in line or "⚠️" in line:
+            logger.warning(f"⚠️ {line}")
+        elif "✅" in line:
+            logger.info(f"✅ {line}")
+        else:
+            logger.info(f"   {line}")
+
+    def _print_separator(self):
+        logger.info("=" * 80)
+
+    def _save_results(self, output_lines, elapsed_minutes, sql_file):
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        sql_name = Path(sql_file).stem
+
+        result_file = RESULTS_DIR / f"pipeline_{sql_name}_{timestamp}.txt"
+        with open(result_file, 'w', encoding='utf-8') as f:
+            f.write(f"Pipeline at {datetime.now().isoformat()}\n")
+            f.write(f"SQL: {sql_file}\n")
+            f.write(f"Duration: {elapsed_minutes:.1f} minutes\n")
+            f.write("=" * 80 + "\n")
+            for line in output_lines:
+                f.write(line + "\n")
+
+        logger.info(f"💾 Results: {result_file}")
+
+    def stop(self):
+        self.stop_monitoring = True
+        self.pending_queue.put(None)
+        if self.current_process:
+            self.current_process.terminate()
 
 
 class Watcher:
     def __init__(self, watch_path=None, mode="all"):
         self.watch_path = watch_path or SQL_FOLDER
+        self.mode = mode
         self.watch_path.mkdir(parents=True, exist_ok=True)
         self.observer = Observer()
         self.handler = SQLFileHandler(mode)
-        self.mode = mode
+
+        file_handler = logging.FileHandler(LOG_FILE, encoding='utf-8')
+        file_handler.setLevel(logging.INFO)
+        file_handler.setFormatter(logging.Formatter('%(asctime)s - %(message)s'))
+        logger.addHandler(file_handler)
 
     def start(self):
-        logger.info("=" * 60)
-        logger.info("🚀 DÉMARRAGE DU WATCHER (MODE SÉQUENTIEL)")
-        logger.info(f"📁 Dossier: {self.watch_path}")
-        logger.info(f"⚡ Mode: {self.mode}")
-        logger.info("=" * 60)
-
-        if sys.platform == 'win32':
-            try:
-                import ctypes
-                kernel32 = ctypes.windll.kernel32
-                kernel32.SetConsoleOutputCP(65001)
-                kernel32.SetConsoleCP(65001)
-            except:
-                pass
-
+        self._print_banner()
         self.observer.schedule(self.handler, str(self.watch_path), recursive=False)
 
         with open(PID_FILE, 'w') as f:
             f.write(str(os.getpid()))
-        with open(MODE_FILE, 'w') as f:
-            f.write(self.mode)
 
         self.observer.start()
-        logger.info("✅ Watcher actif - en attente de fichiers SQL...")
+        logger.info("✅ Watcher active - Ctrl+C to stop")
+        logger.info(f"📁 Monitored folder: {self.watch_path}")
+        logger.info(f"📁 Processed folder: {PROCESSED_FOLDER}")
+        logger.info(f"📊 Results: {RESULTS_DIR}")
+        logger.info(f"⏭️ Ignored files: {IGNORED_FILES}")
+        logger.info("🛑 To stop: Ctrl+C\n")
+
+        signal.signal(signal.SIGINT, self.signal_handler)
 
         try:
             while True:
@@ -170,51 +313,56 @@ class Watcher:
         except KeyboardInterrupt:
             self.stop()
 
+    def signal_handler(self, sig, frame):
+        self.stop()
+
     def stop(self):
+        logger.info("🛑 Stopping...")
+        self.handler.stop()
         self.observer.stop()
         self.observer.join()
-        for f in [PID_FILE, MODE_FILE]:
-            if f.exists():
-                f.unlink()
-        logger.info("👋 Watcher arrêté")
 
-
-def is_running():
-    if PID_FILE.exists():
-        try:
-            with open(PID_FILE, 'r') as f:
-                pid = int(f.read().strip())
-            os.kill(pid, 0)
-            return True
-        except:
+        if PID_FILE.exists():
             PID_FILE.unlink()
-            if MODE_FILE.exists():
-                MODE_FILE.unlink()
-    return False
+
+        logger.info("👋 Stopped")
+        sys.exit(0)
+
+    def _print_banner(self):
+        banner = f"""
+{'=' * 60}
+🚀 PRICING WATCHER - CONTINUOUS MODE
+{'=' * 60}
+📁 Folder: {self.watch_path}
+⚡ Mode: {self.mode}
+📁 Processed: {PROCESSED_FOLDER}
+📊 Results: {RESULTS_DIR}
+⏭️ Ignored: {IGNORED_FILES}
+{'=' * 60}
+"""
+        logger.info(banner)
 
 
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="Watcher pour pipeline pricing (mode séquentiel)")
+    parser = argparse.ArgumentParser()
     parser.add_argument("--mode", type=str, default="all",
-                        choices=["all", "global", "family"],
-                        help="Mode d'exécution")
+                        choices=["all", "global", "family", "couple", "features"])
     args = parser.parse_args()
 
-    # Vérifier si on veut exécuter seulement le mode all
-    if args.mode != "all":
-        logger.error(f"❌ Ce script ne peut être exécuté qu'avec --mode all")
-        logger.info("👉 Utilisation: python scripts/watcher.py --mode all")
-        sys.exit(1)
-
-    if is_running():
-        logger.error("❌ Un watcher est déjà en cours")
-        if MODE_FILE.exists():
-            with open(MODE_FILE, 'r') as f:
-                current_mode = f.read().strip()
-            logger.info(f"📌 Mode actuel: {current_mode}")
-        sys.exit(1)
+    # Check if watcher is already running
+    if PID_FILE.exists():
+        try:
+            with open(PID_FILE, 'r') as f:
+                pid = int(f.read().strip())
+            # Check if process exists
+            os.kill(pid, 0)
+            logger.error("❌ Watcher already running")
+            sys.exit(1)
+        except:
+            # PID file exists but process is dead
+            PID_FILE.unlink()
 
     watcher = Watcher(mode=args.mode)
     watcher.start()

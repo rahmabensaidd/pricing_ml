@@ -1,4 +1,7 @@
-# api_pricing_final_v6.py
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+from pricing_epac import openssl_patch
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel, Field
 from typing import Optional, Dict, Any, List, Union
@@ -14,44 +17,54 @@ import uvicorn
 import traceback
 import re
 import time
+# After imports, before the code starts
+import os
+
+# Configuration for MinIO (S3 compatible)
+os.environ['AWS_ACCESS_KEY_ID'] = 'minio_admin'
+os.environ['AWS_SECRET_ACCESS_KEY'] = 'minio_password'
+os.environ['MLFLOW_S3_ENDPOINT_URL'] = 'http://localhost:9000'
+os.environ['AWS_DEFAULT_REGION'] = 'us-east-1'
+pd.set_option("display.max_columns", None)
+pd.set_option("display.float_format", "{:.4f}".format)
 
 # Configuration
-MLFLOW_TRACKING_URI = "http://127.0.0.1:5000"
+MLFLOW_TRACKING_URI = "http://localhost:5000"
 mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
 client = MlflowClient()
 
-# Constantes
+# Constants
 ALIAS_PRODUCTION = "production"
 MODEL_NAME_GLOBAL = "PricingModelGlobal"
 MODEL_NAME_CLIENT_FEATURES = "ClientFeatures"
 
-# Tags pour les informations supplémentaires
+# Tags for additional information
 TAG_FORMULA = "linear_formula"
 TAG_FEATURE_IMPORTANCE = "feature_importance"
 TAG_SHAP_SUCCESS = "shap_success"
 
-# Configuration logging
+# Logging configuration
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="Pricing MLOps API",
-    description="API pour les prédictions de pricing avec modèles MLflow",
+    description="API for pricing predictions with MLflow models",
     version="6.0.0"
 )
 
 # ==============================================
-# COLONNES D'ENTRAINEMENT DU MODÈLE GLOBAL
+# GLOBAL MODEL TRAINING COLUMNS
 # ==============================================
 
-# Dans le modèle, les booléennes sont dans NUM_COLS et traitées comme des numériques (0/1)
+# In the model, booleans are in NUM_COLS and treated as numeric (0/1)
 NUM_COLS = [
     "quantity",
     "production_page",
     "height",
     "thickness",
     "width",
-    # Booléennes traitées comme numériques (0/1)
+    # Booleans treated as numeric (0/1)
     "security_label",
     "has_coil",
     "has_insert",
@@ -84,9 +97,9 @@ CAT_COLS = [
 
 ALL_FEATURES = NUM_COLS + CAT_COLS
 
-# Types pour les conversions - CORRECTION ICI
-# Maintenant toutes les booléennes sont dans INT_COLS car le modèle attend des entiers 0/1
-BOOL_COLS = []  # Plus utilisé, gardé pour compatibilité
+# Types for conversions - FIXED HERE
+# Now all booleans are in INT_COLS because the model expects 0/1 integers
+BOOL_COLS = []  # No longer used, kept for compatibility
 
 INT_COLS = [
     "quantity",
@@ -105,7 +118,7 @@ INT_COLS = [
 FLOAT_COLS = ["height", "thickness", "width"]
 
 # ==============================================
-# VOCABULAIRE CONNU DES CATÉGORIES
+# KNOWN CATEGORIES VOCABULARY
 # ==============================================
 
 KNOWN_CATEGORIES = {
@@ -131,14 +144,14 @@ FALLBACK_CATEGORY = "missing"
 
 
 # ==============================================
-# MODÈLES PYDANTIC
+# PYDANTIC MODELS
 # ==============================================
 
 class PricingRequest(BaseModel):
-    """Requête de prédiction pricing"""
-    siren: Optional[str] = Field(None, description="SIREN du client (optionnel)")
-    binding_type: Optional[str] = Field(None, description="Type de reliure (optionnel)")
-    features: Dict[str, Any] = Field(..., description="Features techniques du produit")
+    """Pricing prediction request"""
+    siren: Optional[str] = Field(None, description="Client SIREN (optional)")
+    binding_type: Optional[str] = Field(None, description="Binding type (optional)")
+    features: Dict[str, Any] = Field(..., description="Product technical features")
 
     class Config:
         json_schema_extra = {
@@ -189,7 +202,7 @@ class PredictionGlobal(BaseModel):
     prediction: float
     metrics: ModelMetrics = ModelMetrics()
     features_used: List[str] = ALL_FEATURES
-    feature_importance: Dict[str, float] = {}  # AJOUT: Feature importance pour le modèle global
+    feature_importance: Dict[str, float] = {}  # ADDED: Feature importance for global model
     available: bool = True
     error: Optional[str] = None
     warnings: Optional[List[str]] = None
@@ -274,22 +287,22 @@ class PricingResponse(BaseModel):
 
 
 # ==============================================
-# FONCTIONS UTILITAIRES
+# UTILITY FUNCTIONS
 # ==============================================
 
 def sanitize_name(name: str) -> str:
-    """Nettoie un nom pour usage fichier / MLflow registry / modèle."""
-    # Remplacer tous les caractères non alphanumériques par underscore
+    """Cleans a name for file / MLflow registry / model usage."""
+    # Replace all non-alphanumeric characters with underscore
     return re.sub(r"[^a-zA-Z0-9_]", "_", name)
 
 
 def extract_formula_from_tags(tags: Dict) -> Optional[str]:
-    """Extrait la formule des tags MLflow"""
+    """Extracts formula from MLflow tags"""
     return tags.get(TAG_FORMULA, None)
 
 
 def extract_feature_importance_from_tags(tags: Dict) -> Dict[str, float]:
-    """Extrait l'importance des features des tags MLflow"""
+    """Extracts feature importance from MLflow tags"""
     if TAG_FEATURE_IMPORTANCE in tags:
         try:
             return json.loads(tags[TAG_FEATURE_IMPORTANCE])
@@ -299,32 +312,32 @@ def extract_feature_importance_from_tags(tags: Dict) -> Dict[str, float]:
 
 
 def extract_shap_success_from_tags(tags: Dict) -> bool:
-    """Extrait le statut SHAP des tags MLflow"""
+    """Extracts SHAP status from MLflow tags"""
     return tags.get(TAG_SHAP_SUCCESS, "false").lower() == "true"
 
 
 def get_production_model_info(model_name: str) -> Optional[Dict]:
     """
-    Récupère le modèle en production directement depuis MLflow
+    Retrieves the production model directly from MLflow
     """
     try:
-        # Récupérer la version avec l'alias production
+        # Get the version with production alias
         mv = client.get_model_version_by_alias(model_name, ALIAS_PRODUCTION)
         if not mv:
             logger.warning(f"No production alias found for {model_name}")
             return None
 
-        # Charger le modèle
+        # Load the model
         model_uri = f"models:/{model_name}@{ALIAS_PRODUCTION}"
         model = mlflow.pyfunc.load_model(model_uri)
 
-        # Récupérer les informations de la version
+        # Get version information
         model_version = client.get_model_version(model_name, mv.version)
 
-        # Extraire les tags
+        # Extract tags
         tags = model_version.tags if hasattr(model_version, 'tags') else {}
 
-        # Extraire les métadonnées (si présentes)
+        # Extract metadata (if present)
         metadata = {}
         if "metadata" in tags:
             try:
@@ -332,10 +345,10 @@ def get_production_model_info(model_name: str) -> Optional[Dict]:
             except:
                 pass
 
-        # Extraire les métriques des tags
+        # Extract metrics from tags
         metrics = {}
 
-        # Chercher R² dans les tags
+        # Look for R² in tags
         r2_keys = ['r2_test', 'r2', 'test_r2', 'cv_r2', 'performance_r2']
         found_r2 = False
 
@@ -349,7 +362,7 @@ def get_production_model_info(model_name: str) -> Optional[Dict]:
                 except (ValueError, TypeError):
                     continue
 
-        # Chercher dans les métadonnées si pas trouvé
+        # Look in metadata if not found
         if not found_r2 and metadata:
             for key in r2_keys:
                 if key in metadata:
@@ -361,7 +374,7 @@ def get_production_model_info(model_name: str) -> Optional[Dict]:
                     except (ValueError, TypeError):
                         continue
 
-        # Chercher d'autres métriques
+        # Look for other metrics
         for key, value in tags.items():
             if key.startswith("performance_"):
                 metric_name = key.replace("performance_", "")
@@ -375,7 +388,7 @@ def get_production_model_info(model_name: str) -> Optional[Dict]:
                 except:
                     pass
 
-        # Extraire les informations supplémentaires
+        # Extract additional information
         formula = extract_formula_from_tags(tags)
         feature_importance = extract_feature_importance_from_tags(tags)
         shap_available = extract_shap_success_from_tags(tags)
@@ -389,7 +402,7 @@ def get_production_model_info(model_name: str) -> Optional[Dict]:
             "tags": tags,
             "metadata": metadata,
             "description": getattr(model_version, 'description', ''),
-            "metrics": metrics,  # ← C'EST ICI QUE LES MÉTRIQUES SONT STOCKÉES
+            "metrics": metrics,  # ← THIS IS WHERE METRICS ARE STORED
             "formula": formula,
             "feature_importance": feature_importance,
             "shap_available": shap_available
@@ -404,7 +417,7 @@ def get_production_model_info(model_name: str) -> Optional[Dict]:
 
 
 def get_client_features_data(siren: str) -> Optional[Dict]:
-    """Récupère les features client depuis MLflow"""
+    """Retrieves client features from MLflow"""
     try:
         client_features_info = get_production_model_info(MODEL_NAME_CLIENT_FEATURES)
 
@@ -428,7 +441,7 @@ def get_client_features_data(siren: str) -> Optional[Dict]:
 
 
 def safe_categorical_value(value: Any, column: str) -> str:
-    """Convertit une valeur catégorielle en valeur connue du modèle"""
+    """Converts a categorical value to a value known by the model"""
     if pd.isna(value) or value is None:
         return FALLBACK_CATEGORY
 
@@ -446,20 +459,20 @@ def safe_categorical_value(value: Any, column: str) -> str:
 
 def build_features_for_model(request: PricingRequest) -> pd.DataFrame:
     """
-    Construit un DataFrame avec EXACTEMENT les colonnes attendues par le modèle
-    Toutes les colonnes booléennes sont traitées comme des entiers (0/1)
+    Builds a DataFrame with EXACTLY the columns expected by the model
+    All boolean columns are treated as integers (0/1)
     """
     data = {}
     warnings = []
 
-    # Ajouter toutes les features avec leurs valeurs (ou valeurs par défaut)
+    # Add all features with their values (or default values)
     for feature in ALL_FEATURES:
         if feature in request.features:
             value = request.features[feature]
 
-            # Gestion des types selon la colonne
+            # Type handling according to column
             if feature in INT_COLS:
-                # Convertir en entier (0/1 pour les booléennes)
+                # Convert to integer (0/1 for booleans)
                 try:
                     if isinstance(value, bool):
                         data[feature] = 1 if value else 0
@@ -479,14 +492,14 @@ def build_features_for_model(request: PricingRequest) -> pd.DataFrame:
                     warnings.append(f"Could not convert {feature}={value} to int, using 0")
 
             elif feature in FLOAT_COLS:
-                # Garder en float
+                # Keep as float
                 try:
                     data[feature] = float(value)
                 except (ValueError, TypeError):
                     data[feature] = 0.0
                     warnings.append(f"Could not convert {feature}={value} to float, using 0.0")
 
-            else:  # Catégoriel
+            else:  # Categorical
                 data[feature] = safe_categorical_value(value, feature)
 
         elif feature == "siren" and request.siren:
@@ -496,7 +509,7 @@ def build_features_for_model(request: PricingRequest) -> pd.DataFrame:
             data[feature] = safe_categorical_value(request.binding_type, feature)
 
         else:
-            # Valeurs par défaut
+            # Default values
             if feature in INT_COLS:
                 data[feature] = 0
             elif feature in FLOAT_COLS:
@@ -504,13 +517,13 @@ def build_features_for_model(request: PricingRequest) -> pd.DataFrame:
             else:
                 data[feature] = FALLBACK_CATEGORY
 
-    # Créer le DataFrame
+    # Create the DataFrame
     df = pd.DataFrame([data])
 
-    # S'assurer que les colonnes sont dans le bon ordre
+    # Ensure columns are in the correct order
     df = df[ALL_FEATURES]
 
-    # Conversion finale des types - tout en numérique, PAS de booléens
+    # Final type conversion - all numeric, NO booleans
     for col in INT_COLS:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype(int)
@@ -529,16 +542,16 @@ def build_features_for_model(request: PricingRequest) -> pd.DataFrame:
 
 
 def extract_metrics_from_tags(tags: Dict) -> ModelMetrics:
-    """Extrait les métriques des tags MLflow"""
+    """Extracts metrics from MLflow tags"""
     metrics = {}
 
-    # Liste exhaustive des clés possibles pour R²
+    # Exhaustive list of possible keys for R²
     r2_keys = [
         'r2_test', 'r2', 'test_r2', 'cv_r2', 'performance_r2',
         'r2_score', 'R2', 'R²', 'r2_train'
     ]
 
-    # Chercher R² dans toutes les clés possibles
+    # Look for R² in all possible keys
     for key in r2_keys:
         if key in tags:
             try:
@@ -548,7 +561,7 @@ def extract_metrics_from_tags(tags: Dict) -> ModelMetrics:
             except (ValueError, TypeError):
                 continue
 
-    # Si toujours pas de R², chercher dans les clés contenant 'r2'
+    # If still no R², look in keys containing 'r2'
     if 'r2' not in metrics:
         for key, value in tags.items():
             if 'r2' in key.lower() or 'rsquared' in key.lower():
@@ -559,7 +572,7 @@ def extract_metrics_from_tags(tags: Dict) -> ModelMetrics:
                 except (ValueError, TypeError):
                     continue
 
-    # Chercher d'autres métriques
+    # Look for other metrics
     for key, value in tags.items():
         if key.startswith("performance_"):
             metric_name = key.replace("performance_", "")
@@ -577,17 +590,17 @@ def extract_metrics_from_tags(tags: Dict) -> ModelMetrics:
 
 
 def extract_feature_importance(model_info: Dict) -> Dict[str, float]:
-    """Extrait l'importance des features des tags MLflow"""
+    """Extracts feature importance from MLflow tags"""
     try:
-        # Priorité 1: Déjà extrait dans model_info (depuis get_production_model_info)
+        # Priority 1: Already extracted in model_info (from get_production_model_info)
         if "feature_importance" in model_info and model_info["feature_importance"]:
             return model_info["feature_importance"]
 
-        # Priorité 2: Dans les tags
+        # Priority 2: In tags
         if "tags" in model_info and TAG_FEATURE_IMPORTANCE in model_info["tags"]:
             return json.loads(model_info["tags"][TAG_FEATURE_IMPORTANCE])
 
-        # Priorité 3: Dans les métadonnées
+        # Priority 3: In metadata
         if "metadata" in model_info and "feature_importance" in model_info["metadata"]:
             return model_info["metadata"]["feature_importance"]
     except Exception as e:
@@ -597,17 +610,17 @@ def extract_feature_importance(model_info: Dict) -> Dict[str, float]:
 
 
 def get_model_formula(model_info: Dict) -> Optional[str]:
-    """Récupère la formule du modèle des tags MLflow"""
+    """Retrieves model formula from MLflow tags"""
     try:
-        # Priorité 1: Déjà extrait dans model_info (depuis get_production_model_info)
+        # Priority 1: Already extracted in model_info (from get_production_model_info)
         if "formula" in model_info and model_info["formula"]:
             return model_info["formula"]
 
-        # Priorité 2: Dans les tags
+        # Priority 2: In tags
         if "tags" in model_info and TAG_FORMULA in model_info["tags"]:
             return model_info["tags"][TAG_FORMULA]
 
-        # Priorité 3: Dans les métadonnées
+        # Priority 3: In metadata
         if "metadata" in model_info and "formula" in model_info["metadata"]:
             return model_info["metadata"]["formula"]
     except Exception as e:
@@ -687,12 +700,12 @@ async def predict(request: PricingRequest):
     request_id = f"req_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{str(uuid.uuid4())[:8]}"
     logger.info(f"Request {request_id}: siren={request.siren}, binding_type={request.binding_type}")
 
-    # Construire les features pour le modèle avec conversion de types
+    # Build features for the model with type conversion
     input_df, warnings = build_features_for_model(request)
     logger.info(f"Built DataFrame with columns: {list(input_df.columns)}")
     logger.info(f"Data types: {input_df.dtypes.to_dict()}")
 
-    # Initialiser la réponse
+    # Initialize response
     response = PricingResponse(
         request_id=request_id,
         timestamp=datetime.now().isoformat(),
@@ -700,7 +713,7 @@ async def predict(request: PricingRequest):
         summary={}
     )
 
-    # 1. Features client
+    # 1. Client features
     if request.siren:
         try:
             client_data = get_client_features_data(request.siren)
@@ -723,21 +736,21 @@ async def predict(request: PricingRequest):
         except Exception as e:
             logger.error(f"Client features error: {e}")
 
-    # 2. Modèle global
+    # 2. Global model
     try:
         global_info = get_production_model_info(MODEL_NAME_GLOBAL)
         if global_info:
-            # Prédiction
+            # Prediction
             pred = global_info["model"].predict(input_df)[0]
 
-            # La target est log-transformée dans le modèle, donc on applique expm1
-            # Vérifier si la prédiction est en log ou en original
-            if pred < 0 or pred < 100:  # Si c'est petit, c'est probablement en log
+            # Target is log-transformed in the model, so we apply expm1
+            # Check if prediction is in log or original scale
+            if pred < 0 or pred < 100:  # If it's small, it's probably in log
                 pred_original = np.expm1(pred)
             else:
                 pred_original = pred
 
-            # AJOUT: Extraire la feature importance pour le modèle global
+            # ADDED: Extract feature importance for global model
             feature_importance = extract_feature_importance(global_info)
 
             response.global_prediction = PredictionGlobal(
@@ -745,12 +758,12 @@ async def predict(request: PricingRequest):
                 model_version=global_info["version"],
                 prediction=float(pred_original),
                 metrics=extract_metrics_from_tags(global_info.get("tags", {})),
-                feature_importance=feature_importance,  # AJOUT: Ajouter la feature importance
+                feature_importance=feature_importance,  # ADDED: Add feature importance
                 warnings=warnings if warnings else None
             )
             logger.info(f"Global prediction: {pred_original:.2f}")
             if feature_importance:
-                logger.info(f"   📊 Feature importance disponible: {len(feature_importance)} features")
+                logger.info(f"   📊 Feature importance available: {len(feature_importance)} features")
     except Exception as e:
         logger.error(f"Global prediction error: {e}")
         logger.error(traceback.format_exc())
@@ -762,14 +775,14 @@ async def predict(request: PricingRequest):
             error=str(e)
         )
 
-    # 3. Modèles famille
+    # 3. Family models
     if request.binding_type:
-        # Linéaire
+        # Linear
         try:
             family_linear = get_family_model(request.binding_type, "Linear")
             if family_linear:
                 pred = family_linear["model"].predict(input_df)[0]
-                # Appliquer expm1 si nécessaire
+                # Apply expm1 if necessary
                 if pred < 0 or pred < 100:
                     pred_original = np.expm1(pred)
                 else:
@@ -795,7 +808,7 @@ async def predict(request: PricingRequest):
                 reason=str(e)[:100]
             )
 
-        # Non-linéaire
+        # Non-linear
         try:
             family_nonlinear = get_family_model(request.binding_type, "NonLinear")
             if family_nonlinear:
@@ -826,11 +839,11 @@ async def predict(request: PricingRequest):
                 reason=str(e)[:100]
             )
 
-    # 4. Modèles couple
+    # 4. Couple models
     if request.siren and request.binding_type:
         couple_key = f"{request.binding_type} × {request.siren}"
 
-        # Linéaire
+        # Linear
         try:
             couple_linear = get_couple_model(request.binding_type, request.siren, "Linear")
             if couple_linear:
@@ -860,7 +873,7 @@ async def predict(request: PricingRequest):
                 reason=str(e)[:100]
             )
 
-        # Non-linéaire
+        # Non-linear
         try:
             couple_nonlinear = get_couple_model(request.binding_type, request.siren, "NonLinear")
             if couple_nonlinear:
@@ -891,7 +904,7 @@ async def predict(request: PricingRequest):
                 reason=str(e)[:100]
             )
 
-    # Résumé
+    # Summary
     response.summary = {
         "predictions_available": sum([
             1 if response.global_prediction and response.global_prediction.available else 0,
@@ -927,8 +940,8 @@ def get_family_model(binding_type: str, model_type: str) -> Optional[Dict]:
 
 def get_couple_model(binding_type: str, siren: str, model_type: str) -> Optional[Dict]:
     """
-    Récupère le modèle couple avec le format correct: PricingModel_SS__SAV_Linear
-    Note: double underscore entre binding_type et siren
+    Retrieves the couple model with the correct format: PricingModel_SS__SAV_Linear
+    Note: double underscore between binding_type and siren
     """
     safe_binding = sanitize_name(binding_type)
     safe_siren = sanitize_name(siren)
@@ -938,7 +951,7 @@ def get_couple_model(binding_type: str, siren: str, model_type: str) -> Optional
 
 @app.get("/features/client/{siren}")
 async def get_client_features_endpoint(siren: str):
-    """Récupère les features d'un client"""
+    """Retrieves features for a client"""
     data = get_client_features_data(siren)
     if not data:
         return {"siren": siren, "found": False}
@@ -951,7 +964,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", type=str, default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8000)
-    parser.add_argument("--mlflow-uri", type=str, default="http://127.0.0.1:5000")
+    parser.add_argument("--mlflow-uri", type=str, default="http://localhost:5000")
     args = parser.parse_args()
 
     if args.mlflow_uri:
@@ -965,10 +978,60 @@ if __name__ == "__main__":
     print(f"\n📡 MLflow: {MLFLOW_TRACKING_URI}")
     print(f"🌐 API: http://{args.host}:{args.port}")
     print(f"📚 Docs: http://{args.host}:{args.port}/docs")
-    print(f"\n📊 Features du modèle:")
-    print(f"   - Numériques (dont booléennes): {len(NUM_COLS)}")
-    print(f"   - Catégorielles: {len(CAT_COLS)}")
+    print(f"\n📊 Model features:")
+    print(f"   - Numeric (including booleans): {len(NUM_COLS)}")
+    print(f"   - Categorical: {len(CAT_COLS)}")
     print(f"   - Total: {len(ALL_FEATURES)}")
     print("=" * 60)
 
     uvicorn.run("api_pricing_final_v6:app", host=args.host, port=args.port)
+
+
+@app.get("/debug/mlflow")
+async def debug_mlflow():
+    """MLflow diagnostic endpoint"""
+    results = {}
+
+    try:
+        # 1. Check connection
+        results["mlflow_uri"] = MLFLOW_TRACKING_URI
+        results["mlflow_connected"] = False
+
+        experiments = client.search_experiments()
+        results["mlflow_connected"] = True
+        results["experiments_count"] = len(experiments)
+
+        # 2. Check PricingModelGlobal
+        try:
+            mv = client.get_model_version_by_alias(MODEL_NAME_GLOBAL, ALIAS_PRODUCTION)
+            if mv:
+                results["global_model"] = {
+                    "name": MODEL_NAME_GLOBAL,
+                    "version": mv.version,
+                    "alias": ALIAS_PRODUCTION,
+                    "run_id": mv.run_id,
+                    "status": mv.status
+                }
+
+                # Test loading
+                model_uri = f"models:/{MODEL_NAME_GLOBAL}@{ALIAS_PRODUCTION}"
+                model = mlflow.pyfunc.load_model(model_uri)
+                results["global_model"]["loaded"] = True
+            else:
+                results["global_model"] = {"error": "No production alias"}
+        except Exception as e:
+            results["global_model"] = {"error": str(e)}
+
+        # 3. Check ClientFeatures
+        try:
+            mv = client.get_model_version_by_alias(MODEL_NAME_CLIENT_FEATURES, ALIAS_PRODUCTION)
+            results["client_features_model"] = {
+                "exists": mv is not None,
+                "version": mv.version if mv else None
+            }
+        except:
+            results["client_features_model"] = {"exists": False}
+
+        return results
+    except Exception as e:
+        return {"error": str(e), "traceback": traceback.format_exc()}
