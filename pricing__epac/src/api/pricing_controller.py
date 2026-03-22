@@ -10,13 +10,13 @@ from datetime import datetime
 import pandas as pd
 import traceback
 
-from src.api.models.pricing_models import PricingRequest, PricingResponse
-from src.api.services import PricingService
-from src.api.services import MLflowService
-from src.api.ml.model_loader import ModelLoader
-from src.api.ml import ModelRegistry
-from config.settings import settings
-from config import NUM_COLS, CAT_COLS, ALL_FEATURES
+from pricing__epac.src.api.models.pricing_models import PricingRequest, PricingResponse
+from pricing__epac.src.api.services.pricing_service import PricingService
+from pricing__epac.src.api.services.mlflow_service import MLflowService
+from pricing__epac.src.api.ml.model_loader import ModelLoader
+from pricing__epac.src.api.ml.model_registry import ModelRegistry
+from pricing__epac.src.config.settings import settings
+from pricing__epac.src.config.feature_config import NUM_COLS, CAT_COLS, ALL_FEATURES
 
 # Logging configuration
 logging.basicConfig(level=logging.INFO)

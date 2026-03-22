@@ -6,8 +6,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # IMPORTANT: Patch OpenSSL en premier !
 try:
-    from pricing__epac import openssl_patch
-
+    # Importer le module directement (pas besoin de openssl_patch)
+    import pricing__epac.openssl_patch
     print("✅ OpenSSL patch applied successfully")
 except ImportError as e:
     print(f"⚠️ Could not import openssl_patch: {e}")
@@ -16,10 +16,9 @@ except Exception as e:
 
 import argparse
 import uvicorn
-from config.settings import settings
-from config import NUM_COLS, CAT_COLS, ALL_FEATURES
-from src.utils.logging_config import setup_logging
-
+from pricing__epac.src.config.settings import settings
+from pricing__epac.src.config.feature_config import NUM_COLS, CAT_COLS, ALL_FEATURES
+from pricing__epac.src.api.utils.logging_config import setup_logging
 
 def start():
     """Function to start the API"""
@@ -45,12 +44,22 @@ def start():
     print(f"   - Total: {len(ALL_FEATURES)}")
     print("=" * 60)
 
-    uvicorn.run(
-        "main:app",
-        host=args.host,
-        port=args.port,
-        reload=args.reload
-    )
+    if args.reload:
+        # Pour le reload, utiliser une chaîne de caractères
+        uvicorn.run(
+            "pricing_controller:app",  # Format: "nom_fichier:app"
+            host=args.host,
+            port=args.port,
+            reload=True
+        )
+    else:
+        # Sans reload, utiliser l'instance directement
+        from pricing_controller import app
+        uvicorn.run(
+            app,
+            host=args.host,
+            port=args.port
+        )
 
 
 if __name__ == "__main__":

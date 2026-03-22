@@ -1,0 +1,36 @@
+{
+  "best_model": "GradientBoosting",
+  "best_rmse": 5.401684891450658,
+  "timestamp": "20260322_1911",
+  "n_features": 24,
+  "n_samples": 13330,
+  "num_cols": [
+    "quantity",
+    "production_page",
+    "height",
+    "thickness",
+    "width",
+    "security_label",
+    "has_coil",
+    "has_insert",
+    "has_tab",
+    "has_backcover",
+    "perf",
+    "double_sided_cover",
+    "shrinkwrap",
+    "three_hole_drill"
+  ],
+  "cat_cols": [
+    "text_paper_type",
+    "text_color",
+    "cover_finish_type",
+    "cover_color",
+    "cover_size",
+    "cover_paper_type",
+    "head_and_tail",
+    "priority_level",
+    "binding_type",
+    "siren"
+  ],
+  "has_feature_importance": true
+}

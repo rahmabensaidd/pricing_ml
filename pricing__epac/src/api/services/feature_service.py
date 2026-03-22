@@ -2,11 +2,11 @@ import pandas as pd
 import numpy as np
 import logging
 from typing import Any, Tuple, List, Optional
-from config import (
+from pricing__epac.src.config.feature_config import (
     ALL_FEATURES, INT_COLS, FLOAT_COLS,
     KNOWN_CATEGORIES, FALLBACK_CATEGORY
 )
-from src.api.models.pricing_models import PricingRequest
+from pricing__epac.src.api.models.pricing_models import PricingRequest
 
 logger = logging.getLogger(__name__)
 

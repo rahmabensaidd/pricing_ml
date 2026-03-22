@@ -4,15 +4,15 @@ from datetime import datetime
 from typing import Optional, Dict, List
 import traceback
 
-from src.api.ml.model_loader import ModelLoader
-from src.api.services.feature_service import FeatureService
-from src.api.models.pricing_models import (
+from pricing__epac.src.api.ml.model_loader import ModelLoader
+from pricing__epac.src.api.services.feature_service import FeatureService
+from pricing__epac.src.api.models.pricing_models import (
     PricingRequest, PricingResponse, PredictionGlobal,
     PredictionFamilyLinear, PredictionFamilyNonLinear,
     PredictionCoupleLinear, PredictionCoupleNonLinear,
     ClientFeaturesInfo, ModelMetrics
 )
-from config.settings import settings
+from pricing__epac.src.config.settings import settings
 
 logger = logging.getLogger(__name__)
 

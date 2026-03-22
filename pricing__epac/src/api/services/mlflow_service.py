@@ -5,8 +5,8 @@ import pandas as pd
 import logging
 import json
 from typing import Optional, Dict, List
-from config.settings import settings
-from src.api.ml.model_loader import ModelLoader
+from pricing__epac.src.config.settings import settings
+from pricing__epac.src.api.ml.model_loader import ModelLoader
 
 logger = logging.getLogger(__name__)
 

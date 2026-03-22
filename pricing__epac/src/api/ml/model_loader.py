@@ -5,7 +5,7 @@ import logging
 import json
 import pandas as pd
 from typing import Optional, Dict
-from config.settings import settings
+from pricing__epac.src.config.settings import settings
 
 logger = logging.getLogger(__name__)
 

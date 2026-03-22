@@ -142,9 +142,9 @@ def save_dvc_hash_tracking(model_name: str, version: int, artifact_paths: List[P
 # ────────────────────────────────────────────────
 
 _current_file = Path(__file__).resolve()
-PACKAGE_DIR = _current_file.parent.parent.parent.parent  # pricing__epac
-# La racine du projet (le dossier parent de pricing__epac)
-PROJECT_ROOT = PACKAGE_DIR.parent
+PACKAGE_ROOT = _current_file.parents[4]
+PROJECT_ROOT = _current_file.parents[4]
+PACKAGE_DIR=PACKAGE_ROOT / "pricing__epac"
 
 # Définir tous les chemins
 MODELS_DIR = PACKAGE_DIR / "models"

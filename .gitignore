@@ -27,13 +27,13 @@ venv/
 # MLflow
 # -----------------------
 mlruns/
-catboost_info/
+
 *.log
 
 # -----------------------
 # Models
 # -----------------------
-models/
+pricing__epac/models/
 *.pkl
 *.joblib
 
