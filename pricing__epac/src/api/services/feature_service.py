@@ -1,8 +1,8 @@
 import pandas as pd
 import numpy as np
 import logging
-from typing import Dict, Any, Tuple, List, Optional
-from src.config.feature_config import (
+from typing import Any, Tuple, List, Optional
+from config import (
     ALL_FEATURES, INT_COLS, FLOAT_COLS,
     KNOWN_CATEGORIES, FALLBACK_CATEGORY
 )

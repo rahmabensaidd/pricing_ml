@@ -1,7 +1,7 @@
 from mlflow.tracking import MlflowClient
 import logging
 from typing import List, Dict, Optional
-from src.config.settings import settings
+from config.settings import settings
 
 logger = logging.getLogger(__name__)
 

@@ -9,7 +9,7 @@ dist/
 build/
 
 # -----------------------
-# Environnements
+# Environements
 # -----------------------
 .venv/
 env/
@@ -38,32 +38,32 @@ models/
 *.joblib
 
 # -----------------------
-# DATA - RÈGLES CLAIRES
+# DATA
 # -----------------------
 
-# 1. IGNORER TOUS LES CSV PAR DÉFAUT
+# 1. IGNORE all cvs
 *.csv
 
-# 2. EXCEPTIONS POUR LE DOSSIER STATIC
-!data/raw/static/
-!data/raw/static/**/*.csv
-!data/raw/static/.gitkeep
+# 2. EXCEPT FOR STATIC FOLDERS
+!pricing__epac/data/raw/static/
+!pricing__epac/data/raw/static/**/*.csv
+!pricing__epac/data/raw/static/.gitkeep
 
-# 3. IGNORER LE CONTENU DES AUTRES DOSSIERS DATA
-data/consolidated/*
-data/enriched/*
-data/features/*
-data/processed/*
-data/pipeline_results/*
-data/raw/dumps/sql/*
+# 3. IGNORE CONTENT OF OTHER FOLDERS
+pricing__epac/data/consolidated/*
+pricing__epac/data/enriched/*
+pricing__epac/data/features/*
+pricing__epac/data/processed/*
+pricing__epac/data/pipeline_results/*
+pricing__epac/data/raw/dumps/sql/*
 
-# 4. GARDER LA STRUCTURE AVEC .gitkeep
-!data/consolidated/.gitkeep
-!data/enriched/.gitkeep
-!data/features/.gitkeep
-!data/processed/.gitkeep
-!data/pipeline_results/.gitkeep
-!data/raw/dumps/sql/.gitkeep
+# 4. KEEP STRUCTURE WITH .gitkeep
+!pricing__epac/data/consolidated/.gitkeep
+!pricing__epac/data/enriched/.gitkeep
+!pricing__epac/data/features/.gitkeep
+!pricing__epac/data/processed/.gitkeep
+!pricing__epac/data/pipeline_results/.gitkeep
+!pricing__epac/data/raw/dumps/sql/.gitkeep
 
 # -----------------------
 # DVC

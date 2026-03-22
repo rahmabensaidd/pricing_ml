@@ -1,33 +1,27 @@
 import os
 import sys
 
-from scripts.watcher import SQL_FOLDER
+from pricing__epac.src.machine_learning.scripts.watcher import SQL_FOLDER
 
 # Add root path to find openssl_patch
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-from pricing_epac import openssl_patch  # ← IMPORT OF CENTRAL PATCH
 from pathlib import Path
 from prefect import flow, task
 import subprocess
-import shutil
 import hashlib
 import mlflow
 import mlflow.sklearn
 import mlflow.pyfunc
-from mlflow.models import infer_signature
 from mlflow.tracking import MlflowClient
 from mlflow.pyfunc import PythonModel
 import matplotlib
-import time
 from mlflow.models import infer_signature
-from mlflow.models.signature import ModelSignature
 from mlflow.types.schema import Schema, ColSpec
 import pandas as pd
 import numpy as np
 import tempfile
 import json
 from datetime import datetime
-import pickle
 import sys
 import warnings
 import traceback
@@ -36,17 +30,14 @@ from typing import Optional, Dict, Any, List, Tuple
 warnings.filterwarnings('ignore')
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from joblib import dump, load
+from joblib import dump
 
-from scripts.consolidate_data import run_consolidation
-from pricing_epac.preprocessing.full_preprocess import full_preprocessing, save_processed
-from pricing_epac.models.train_and_compare import train_and_compare
-from pricing_epac.models.train_by_family_bindingtype import train_by_bindingtype_regularized as train_by_bindingtype
-from pricing_epac.models.train_by_family_bindingtypeandsiren import train_by_bindingtype_siren
-import re
+from pricing__epac.src.machine_learning.scripts.consolidate_data import run_consolidation
+from pricing__epac.src.machine_learning.preprocessing.full_prepro import full_preprocessing, save_processed
+from pricing__epac.src.machine_learning.models.train_and_compare import train_and_compare
+from pricing__epac.src.machine_learning.models.train_by_family_bindingtype import train_by_bindingtype_regularized as train_by_bindingtype
+from pricing__epac.src.machine_learning.models.train_by_family_bindingtypeandsiren import train_by_bindingtype_siren
 
-import platform
-from mlflow.models.signature import ModelSignature
 # Configuration for MinIO (S3 compatible)
 import warnings
 
@@ -60,11 +51,10 @@ os.environ['AWS_DEFAULT_REGION'] = 'us-east-1'  # Required for boto3
 # ────────────────────────────────────────────────
 # Configuration for client features
 # ────────────────────────────────────────────────
-from pricing_epac.models.client_history_features import (
+from pricing__epac.src.machine_learning.models.client_history_features import (
     create_client_features,
     add_client_features_to_orders,
-    save_client_features,
-    load_client_features
+    save_client_features
 )
 
 
@@ -150,17 +140,21 @@ def save_dvc_hash_tracking(model_name: str, version: int, artifact_paths: List[P
 # ────────────────────────────────────────────────
 # Configuration - MLflow Server Version
 # ────────────────────────────────────────────────
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-PACKAGE_DIR = PROJECT_ROOT / "pricing_epac"
-MODELS_DIR = PROJECT_ROOT / "models"
-MLRUNS_DIR = PROJECT_ROOT / "mlruns"
+
+_current_file = Path(__file__).resolve()
+PACKAGE_DIR = _current_file.parent.parent.parent.parent  # pricing__epac
+# La racine du projet (le dossier parent de pricing__epac)
+PROJECT_ROOT = PACKAGE_DIR.parent
+
+# Définir tous les chemins
+MODELS_DIR = PACKAGE_DIR / "models"
+MLRUNS_DIR = PACKAGE_DIR / "mlruns"
 DVC_TRACKING_DIR = MODELS_DIR / "dvc_tracking"
 TARGET = "unit_price"
 MLFLOW_MODEL_NAME_GLOBAL = "PricingModelGlobal"
 MLFLOW_MODEL_NAME_CLIENT_FEATURES = "ClientFeatures"
-CLIENT_FEATURES_FILE = PROJECT_ROOT / "data" / "features" / "client_features.xlsx"
-ENRICHED_DATA_FILE = PROJECT_ROOT / "data" / "enriched" / "dataset_with_client_features.xlsx"
-
+CLIENT_FEATURES_FILE = PACKAGE_DIR / "data" / "features" / "client_features.xlsx"
+ENRICHED_DATA_FILE = PACKAGE_DIR / "data" / "enriched" / "dataset_with_client_features.xlsx"
 # Create necessary directories
 MODELS_DIR.mkdir(exist_ok=True)
 MLRUNS_DIR.mkdir(exist_ok=True)
@@ -207,7 +201,7 @@ for exp_name, exp_desc in experiments:
         else:
             print(f"   ❌ Error creating {exp_name}: {e}")
 
-CONSOLIDATED_FILE = PROJECT_ROOT / "data" / "consolidated" / "dataset_complet.xlsx"
+CONSOLIDATED_FILE = PROJECT_ROOT /"pricing__epac"/ "data" / "consolidated" / "dataset_complet.xlsx"
 
 RAW_FEATURES = [
     "quantity", "production_page", "height", "thickness", "width",
@@ -1133,12 +1127,13 @@ def consolidate_data_task() -> Path:
         except TypeError:
             # If run_consolidation doesn't accept parameters, copy the file
             # to the default location
-            default_sql_dir = PROJECT_ROOT / "data" / "raw" / "dumps" / "sql"
+            default_sql_dir = PACKAGE_DIR / "data" / "raw" / "dumps" / "sql"
             default_sql_dir.mkdir(parents=True, exist_ok=True)
             target = default_sql_dir / "mysql_db_dump.sql"
             shutil.copy2(sql_file, target)
             print(f"📋 File copied to: {target}")
             path = run_consolidation()
+
     else:
         path = run_consolidation()
 
@@ -1150,7 +1145,7 @@ def consolidate_data_task() -> Path:
 def run_preprocessing() -> Tuple[Path, pd.DataFrame]:
     """Data preprocessing task"""
     input_path = CONSOLIDATED_FILE
-    cleaned_path = PROJECT_ROOT / "data" / "processed" / "pricing_fully_cleaned.xlsx"
+    cleaned_path = PACKAGE_DIR / "data" / "processed" / "pricing_fully_cleaned.xlsx"
 
     if not input_path.exists():
         raise FileNotFoundError(f"Consolidated file not found: {input_path}")

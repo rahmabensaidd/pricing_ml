@@ -1,20 +1,18 @@
 import logging
 import uuid
 from datetime import datetime
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, List
 import traceback
-import numpy as np
-import pandas as pd
 
-from src.ml.model_loader import ModelLoader
-from src.services.feature_service import FeatureService
+from src.api.ml.model_loader import ModelLoader
+from src.api.services.feature_service import FeatureService
 from src.api.models.pricing_models import (
     PricingRequest, PricingResponse, PredictionGlobal,
     PredictionFamilyLinear, PredictionFamilyNonLinear,
     PredictionCoupleLinear, PredictionCoupleNonLinear,
     ClientFeaturesInfo, ModelMetrics
 )
-from src.config.settings import settings
+from config.settings import settings
 
 logger = logging.getLogger(__name__)
 

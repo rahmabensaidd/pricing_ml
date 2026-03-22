@@ -7,15 +7,12 @@ Couvre chaque fonction individuellement et le pipeline dans son ensemble.
 import pytest
 import pandas as pd
 import numpy as np
-from datetime import datetime
 from pathlib import Path
 import tempfile
-import shutil
-import joblib
 from unittest.mock import Mock, patch, MagicMock
 
 # Import du module à tester
-from pricing_epac.preprocessing.full_preprocess import (
+from src.machine_learning.preprocessing.full_preprocess import (
     get_project_root,
     initial_cleaning,
     remove_duplicates,

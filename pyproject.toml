@@ -34,6 +34,7 @@ mysql-connector-python = "^9.6.0"
 sqlalchemy = "^2.0.47"
 pymysql = "^1.1.2"
 boto3 = "1.28.0"
+python-dotenv = "^1.2.2"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.0"

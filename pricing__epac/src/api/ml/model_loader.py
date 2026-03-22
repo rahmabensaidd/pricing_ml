@@ -4,8 +4,8 @@ from mlflow.tracking import MlflowClient
 import logging
 import json
 import pandas as pd
-from typing import Optional, Dict, Any, List
-from src.config.settings import settings
+from typing import Optional, Dict
+from config.settings import settings
 
 logger = logging.getLogger(__name__)
 

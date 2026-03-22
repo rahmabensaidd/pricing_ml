@@ -4,9 +4,9 @@ from mlflow.tracking import MlflowClient
 import pandas as pd
 import logging
 import json
-from typing import Optional, Dict, Any, List
-from src.config.settings import settings
-from src.ml.model_loader import ModelLoader
+from typing import Optional, Dict, List
+from config.settings import settings
+from src.api.ml.model_loader import ModelLoader
 
 logger = logging.getLogger(__name__)
 

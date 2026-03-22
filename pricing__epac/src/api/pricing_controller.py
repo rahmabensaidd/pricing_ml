@@ -11,12 +11,12 @@ import pandas as pd
 import traceback
 
 from src.api.models.pricing_models import PricingRequest, PricingResponse
-from src.services.pricing_service import PricingService
-from src.services.mlflow_service import MLflowService
-from src.ml.model_loader import ModelLoader
-from src.ml.model_registry import ModelRegistry
-from src.config.settings import settings
-from src.config.feature_config import NUM_COLS, CAT_COLS, ALL_FEATURES
+from src.api.services import PricingService
+from src.api.services import MLflowService
+from src.api.ml.model_loader import ModelLoader
+from src.api.ml import ModelRegistry
+from config.settings import settings
+from config import NUM_COLS, CAT_COLS, ALL_FEATURES
 
 # Logging configuration
 logging.basicConfig(level=logging.INFO)

@@ -6,7 +6,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # IMPORTANT: Patch OpenSSL en premier !
 try:
-    from pricing_epac import openssl_patch
+    from pricing__epac import openssl_patch
 
     print("✅ OpenSSL patch applied successfully")
 except ImportError as e:
@@ -16,9 +16,8 @@ except Exception as e:
 
 import argparse
 import uvicorn
-from src.api.pricing_controller import app
-from src.config.settings import settings
-from src.config.feature_config import NUM_COLS, CAT_COLS, ALL_FEATURES
+from config.settings import settings
+from config import NUM_COLS, CAT_COLS, ALL_FEATURES
 from src.utils.logging_config import setup_logging
 
 
