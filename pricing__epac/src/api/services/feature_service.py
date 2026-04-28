@@ -3,10 +3,10 @@ import numpy as np
 import logging
 from typing import Any, Tuple, List, Optional
 from pricing__epac.src.config.feature_config import (
-    ALL_FEATURES, INT_COLS, FLOAT_COLS,
+    ALL_FEATURES, INT_COLS, FLOAT_COLS, BOOLEAN_INT_COLS,
     KNOWN_CATEGORIES, FALLBACK_CATEGORY
 )
-from pricing__epac.src.api.models.pricing_models import PricingRequest
+from pricing__epac.src.api.schemas.pricing_models import PricingRequest
 
 logger = logging.getLogger(__name__)
 
@@ -83,20 +83,28 @@ class FeatureService:
 
     @staticmethod
     def _process_int_feature(feature: str, value: Any) -> Tuple[int, Optional[str]]:
-        """Process integer/boolean feature"""
+        """Process integer feature while preserving true counts."""
         try:
-            if isinstance(value, bool):
-                return (1 if value else 0, None)
-            elif isinstance(value, (int, float)):
-                return (1 if float(value) != 0 else 0, None)
-            elif isinstance(value, str):
-                str_val = value.lower().strip()
-                if str_val in ['true', '1', 'yes', 'oui', 'vrai']:
-                    return (1, None)
-                else:
-                    return (0, None)
-            else:
+            if feature in BOOLEAN_INT_COLS:
+                if isinstance(value, bool):
+                    return (1 if value else 0, None)
+                if isinstance(value, (int, float)):
+                    return (1 if float(value) != 0 else 0, None)
+                if isinstance(value, str):
+                    str_val = value.lower().strip()
+                    if str_val in ['true', '1', 'yes', 'oui', 'vrai']:
+                        return (1, None)
+                    if str_val in ['false', '0', 'no', 'non', 'faux', '']:
+                        return (0, None)
                 return (0, f"Could not convert {feature}={value} to int, using 0")
+
+            if isinstance(value, bool):
+                return (int(value), None)
+            if isinstance(value, (int, float)):
+                return (int(float(value)), None)
+            if isinstance(value, str):
+                return (int(float(value.strip())), None)
+            return (0, f"Could not convert {feature}={value} to int, using 0")
         except (ValueError, TypeError):
             return (0, f"Could not convert {feature}={value} to int, using 0")
 
@@ -114,15 +122,16 @@ class FeatureService:
         if pd.isna(value) or value is None:
             return FALLBACK_CATEGORY
 
-        str_value = str(value).strip()
+        str_value = str(value).strip().upper()
 
         if column in KNOWN_CATEGORIES:
-            if str_value in KNOWN_CATEGORIES[column]:
-                return str_value
-            else:
-                logger.warning(
-                    f"Unknown category '{str_value}' for column {column}, using fallback '{FALLBACK_CATEGORY}'")
-                return FALLBACK_CATEGORY
+            allowed_lookup = {item.upper(): item for item in KNOWN_CATEGORIES[column]}
+            if str_value in allowed_lookup:
+                return allowed_lookup[str_value]
+
+            logger.warning(
+                f"Unknown category '{str_value}' for column {column}, keeping normalized value")
+            return str_value
 
         return str_value
 
@@ -130,7 +139,5 @@ class FeatureService:
 
     @staticmethod
     def transform_prediction(prediction: float) -> float:
-        """Transform prediction if needed (log transformation)"""
-        if prediction < 0 or prediction < 100:  # If it's small, it's probably in log
-            return float(np.expm1(prediction))
-        return float(prediction)
+        """Convert model output from log1p(price) back to price scale."""
+        return float(np.expm1(float(prediction)))

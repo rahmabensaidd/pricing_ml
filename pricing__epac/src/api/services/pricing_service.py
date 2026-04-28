@@ -6,7 +6,7 @@ import traceback
 
 from pricing__epac.src.api.ml.model_loader import ModelLoader
 from pricing__epac.src.api.services.feature_service import FeatureService
-from pricing__epac.src.api.models.pricing_models import (
+from pricing__epac.src.api.schemas.pricing_models import (
     PricingRequest, PricingResponse, PredictionGlobal,
     PredictionFamilyLinear, PredictionFamilyNonLinear,
     PredictionCoupleLinear, PredictionCoupleNonLinear,

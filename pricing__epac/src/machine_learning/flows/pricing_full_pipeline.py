@@ -1,7 +1,9 @@
 import os
 import sys
 
-from pricing__epac.src.machine_learning.scripts.watcher import SQL_FOLDER
+from pricing__epac.src.machine_learning.orchestration.watcher import SQL_FOLDER
+from pricing__epac.src.machine_learning.training.client_history_features import save_client_features, \
+    add_client_features_to_orders, create_client_features
 
 # Add root path to find openssl_patch
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
@@ -32,11 +34,60 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from joblib import dump
 
-from pricing__epac.src.machine_learning.scripts.consolidate_data import run_consolidation
+from pricing__epac.src.machine_learning.orchestration.consolidate_data import run_consolidation
 from pricing__epac.src.machine_learning.preprocessing.full_prepro import full_preprocessing, save_processed
-from pricing__epac.src.machine_learning.models.train_and_compare import train_and_compare
-from pricing__epac.src.machine_learning.models.train_by_family_bindingtype import train_by_bindingtype_regularized as train_by_bindingtype
-from pricing__epac.src.machine_learning.models.train_by_family_bindingtypeandsiren import train_by_bindingtype_siren
+from pricing__epac.src.machine_learning.training.train_and_compare import train_and_compare
+from pricing__epac.src.machine_learning.training.train_by_family_bindingtype import train_by_bindingtype_regularized as train_by_bindingtype
+from pricing__epac.src.machine_learning.training.train_by_family_bindingtypeandsiren import train_by_bindingtype_siren
+from pricing__epac.src.config.settings import settings
+from pricing__epac.src.machine_learning.flows.pipeline_client_features import (
+    create_client_features_task as pipeline_create_client_features_task,
+    validate_client_features as pipeline_validate_client_features,
+)
+from pricing__epac.src.machine_learning.flows.pipeline_preprocessing import (
+    consolidate_data_task as pipeline_consolidate_data_task,
+    run_preprocessing as pipeline_run_preprocessing,
+)
+from pricing__epac.src.machine_learning.flows.pipeline_support import (
+    ALIAS_ARCHIVED,
+    ALIAS_PRODUCTION,
+    ALIAS_STAGING,
+    TAG_ARTIFACT_PATH,
+    TAG_BEST_MODEL,
+    TAG_DATA_TYPE,
+    TAG_DEPLOYMENT_DATE,
+    TAG_DVC_HASH,
+    TAG_DVC_TRACKED,
+    TAG_FAMILY,
+    TAG_GIT_COMMIT,
+    TAG_LIFECYCLE_STATUS,
+    TAG_MODEL_TYPE,
+    TAG_N_CLIENTS,
+    TAG_N_FEATURES,
+    TAG_PERFORMANCE_R2,
+    TAG_PERFORMANCE_RMSE,
+    TAG_REASON,
+    TAG_RUN_ID,
+    TAG_RUN_NAME,
+    TAG_TRAINING_DATE,
+    archive_version_with_tags,
+    clean_artifacts,
+    compute_dvc_hash,
+    create_comparison_dataframe,
+    create_comparison_plot,
+    get_all_model_versions,
+    get_git_commit_hash,
+    get_latest_model_version,
+    get_model_version_by_alias,
+    get_model_version_tags,
+    model_version_exists,
+    run_dvc_pull,
+    save_dvc_hash_tracking,
+    set_model_alias,
+    set_model_version_tags,
+    set_production_alias,
+    update_lifecycle_status,
+)
 
 # Configuration for MinIO (S3 compatible)
 import warnings
@@ -44,21 +95,13 @@ import warnings
 # Disable pyOpenSSL in urllib3 (even if not installed)
 os.environ['URLLIB3_USE_PYOPENSSL'] = '0'
 warnings.filterwarnings('ignore', module='urllib3.contrib.pyopenssl')
-os.environ['AWS_ACCESS_KEY_ID'] = 'minio_admin'
-os.environ['AWS_SECRET_ACCESS_KEY'] = 'minio_password'
-os.environ['MLFLOW_S3_ENDPOINT_URL'] = 'http://localhost:9000'  # MinIO URL
-os.environ['AWS_DEFAULT_REGION'] = 'us-east-1'  # Required for boto3
+os.environ['AWS_ACCESS_KEY_ID'] = settings.AWS_ACCESS_KEY_ID
+os.environ['AWS_SECRET_ACCESS_KEY'] = settings.AWS_SECRET_ACCESS_KEY
+os.environ['MLFLOW_S3_ENDPOINT_URL'] = settings.MLFLOW_S3_ENDPOINT_URL
+os.environ['AWS_DEFAULT_REGION'] = settings.AWS_DEFAULT_REGION
 # ────────────────────────────────────────────────
 # Configuration for client features
 # ────────────────────────────────────────────────
-from pricing__epac.src.machine_learning.models.client_history_features import (
-    create_client_features,
-    add_client_features_to_orders,
-    save_client_features
-)
-
-
-
 
 # ────────────────────────────────────────────────
 # DVC Hash utilities
@@ -147,27 +190,25 @@ PROJECT_ROOT = _current_file.parents[4]
 PACKAGE_DIR=PACKAGE_ROOT / "pricing__epac"
 
 # Définir tous les chemins
-MODELS_DIR = PACKAGE_DIR / "models"
-MLRUNS_DIR = PACKAGE_DIR / "mlruns"
-DVC_TRACKING_DIR = MODELS_DIR / "dvc_tracking"
+MODELS_DIR = settings.MODELS_ARTIFACT_ROOT
+DVC_TRACKING_DIR = settings.DVC_TRACKING_ROOT
 TARGET = "unit_price"
 MLFLOW_MODEL_NAME_GLOBAL = "PricingModelGlobal"
 MLFLOW_MODEL_NAME_CLIENT_FEATURES = "ClientFeatures"
-CLIENT_FEATURES_FILE = PACKAGE_DIR / "data" / "features" / "client_features.xlsx"
-ENRICHED_DATA_FILE = PACKAGE_DIR / "data" / "enriched" / "dataset_with_client_features.xlsx"
+CLIENT_FEATURES_FILE = settings.DATA_ROOT / "features" / "client_features.xlsx"
+ENRICHED_DATA_FILE = settings.DATA_ROOT / "enriched" / "dataset_with_client_features.xlsx"
 # Create necessary directories
-MODELS_DIR.mkdir(exist_ok=True)
-MLRUNS_DIR.mkdir(exist_ok=True)
+MODELS_DIR.mkdir(parents=True, exist_ok=True)
 DVC_TRACKING_DIR.mkdir(parents=True, exist_ok=True)
 ENRICHED_DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
 CLIENT_FEATURES_FILE.parent.mkdir(parents=True, exist_ok=True)
 
 # MLflow configuration to use server
-MLFLOW_TRACKING_URI = "http://localhost:5000"
+MLFLOW_TRACKING_URI = settings.MLFLOW_TRACKING_URI
 mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
 
 print(f"\n🔍 MLflow Tracking URI: {mlflow.get_tracking_uri()}")
-print(f"   Local MLruns folder: {MLRUNS_DIR.absolute()}")
+print(f"   Artifacts folder: {MODELS_DIR.absolute()}")
 
 # Check server connection
 try:
@@ -178,8 +219,7 @@ try:
 except Exception as e:
     print(f"   ⚠️ Cannot connect to MLflow server: {e}")
     print(f"   ⚠️ Make sure the server is running with:")
-    print(
-        f"      mlflow server --backend-store-uri sqlite:///mlflow.db --default-artifact-root ./mlruns --host 0.0.0.0 --port 5000")
+    print("      docker compose up -d postgres-mlflow minio create-bucket mlflow-server")
 
 # Create/Verify experiments
 print("\n📊 Creating/Verifying MLflow experiments...")
@@ -1018,7 +1058,7 @@ def mlflow_log_client_features(client_features: pd.DataFrame, cleaned_file: Path
 
             # Log the model in MLflow
             model_info = mlflow.pyfunc.log_model(
-                artifact_path="client_features_model",
+                name="client_features_model",
                 python_model=features_wrapper,
                 artifacts={
                     "features_csv": str(features_csv),
@@ -1503,6 +1543,7 @@ def create_client_features_task(cleaned_file: Path) -> Tuple[Path, pd.DataFrame,
 
 @task(name="Validate Client Features")
 def validate_client_features(client_features: pd.DataFrame) -> Dict[str, Any]:
+
     """
     Validates the quality of client features
     """
@@ -2486,7 +2527,6 @@ def pricing_mlops_pipeline(
     print(f"   - DVC Tracking: YES")
 
     print(f"\n🔍 MLflow Tracking URI: {mlflow.get_tracking_uri()}")
-    MLRUNS_DIR.mkdir(exist_ok=True)
 
     start_time = datetime.now()
     results = {}
@@ -2499,13 +2539,18 @@ def pricing_mlops_pipeline(
         print("\n" + "=" * 60)
         print("📦 STEP 1/6: DATA CONSOLIDATION")
         print("=" * 60)
-        consolidate_data_task()
+        pipeline_consolidate_data_task.fn("PRICING_SQL_FILE", PACKAGE_DIR)
 
     # STEP 2: PREPROCESSING
     print("\n" + "=" * 60)
     print("🧹 STEP 2/6: PREPROCESSING")
     print("=" * 60)
-    cleaned_path, sample_X = run_preprocessing()
+    cleaned_path, sample_X = pipeline_run_preprocessing.fn(
+        consolidated_file=CONSOLIDATED_FILE,
+        cleaned_path=PACKAGE_DIR / "data" / "processed" / "pricing_fully_cleaned.xlsx",
+        raw_features=RAW_FEATURES,
+        project_root=PROJECT_ROOT,
+    )
 
     # STEP 3: CLIENT FEATURES
     training_data_path = cleaned_path
@@ -2516,8 +2561,15 @@ def pricing_mlops_pipeline(
         print("👥 STEP 3/6: CREATING CLIENT FEATURES")
         print("=" * 60)
         try:
-            enriched_path, client_features, enriched_df, mlflow_result = create_client_features_task(cleaned_path)
-            client_stats = validate_client_features(client_features)
+            enriched_path, client_features, enriched_df, mlflow_result = pipeline_create_client_features_task.fn(
+                cleaned_file=cleaned_path,
+                client_features_file=CLIENT_FEATURES_FILE,
+                enriched_data_file=ENRICHED_DATA_FILE,
+                mlflow_model_name=MLFLOW_MODEL_NAME_CLIENT_FEATURES,
+                dvc_tracking_dir=DVC_TRACKING_DIR,
+                project_root=PROJECT_ROOT,
+            )
+            client_stats = pipeline_validate_client_features.fn(client_features)
             results["client_features"] = {
                 "path": str(enriched_path),
                 "stats": client_stats,
@@ -2701,7 +2753,7 @@ def pricing_mlops_pipeline(
             print(f"   🔗 Input data DVC hash: {results['couple']['input_data_dvc_hash']}")
 
     print(f"\n📊 To view MLflow results:")
-    print(f"   Open: http://localhost:5000 in your browser")
+    print(f"   Open: {settings.MLFLOW_TRACKING_URI} in your browser")
     print(f"   (MLflow server must be running with 'mlflow server ...')")
 
     print("\n" + "=" * 80)

@@ -1,30 +1,21 @@
 version: '3.8'
 
-# Réseau commun pour tous les services
 networks:
   epac_network:
     driver: bridge
 
-# Volumes partagés
 volumes:
-  # MySQL data (votre volume existant)
   mysql_data:
-  # Nouveaux volumes pour MLflow
   postgres_mlflow_data:
   minio_data:
 
 services:
-  # ============================================
-  # SERVICE 1 : MySQL pour le preprocessing
-  # ============================================
   mysql:
     image: mysql:8.0
     container_name: mysql-epac
     environment:
-      MYSQL_ROOT_PASSWORD: root
-      MYSQL_DATABASE: temp_epac
-      MYSQL_USER: epac_user
-      MYSQL_PASSWORD: epac_password
+      MYSQL_ROOT_PASSWORD: ${MYSQL_PASSWORD:?Set MYSQL_PASSWORD in .env}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-temp_epac}
       MYSQL_CHARACTER_SET_SERVER: utf8mb4
       MYSQL_COLLATION_SERVER: utf8mb4_unicode_ci
     ports:
@@ -38,29 +29,26 @@ services:
       - --default-authentication-plugin=mysql_native_password
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-p${MYSQL_PASSWORD:?Set MYSQL_PASSWORD in .env}"]
       interval: 10s
       timeout: 5s
       retries: 5
     networks:
       - epac_network
 
-  # ============================================
-  # SERVICE 2 : PostgreSQL pour les métadonnées MLflow
-  # ============================================
   postgres-mlflow:
     image: postgres:13
     container_name: postgres-mlflow
     environment:
-      POSTGRES_USER: mlflow_user
-      POSTGRES_PASSWORD: mlflow_password
-      POSTGRES_DB: mlflow_db
+      POSTGRES_USER: ${MLFLOW_POSTGRES_USER:-mlflow_user}
+      POSTGRES_PASSWORD: ${MLFLOW_POSTGRES_PASSWORD:?Set MLFLOW_POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${MLFLOW_POSTGRES_DB:-mlflow_db}
     ports:
       - "5433:5432"
     volumes:
       - postgres_mlflow_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U mlflow_user -d mlflow_db"]
+      test: ["CMD-SHELL", "pg_isready -U ${MLFLOW_POSTGRES_USER:-mlflow_user} -d ${MLFLOW_POSTGRES_DB:-mlflow_db}"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -68,15 +56,12 @@ services:
       - epac_network
     restart: unless-stopped
 
-  # ============================================
-  # SERVICE 3 : MinIO pour les artefacts MLflow
-  # ============================================
   minio:
     image: minio/minio:latest
     container_name: minio-mlflow
     environment:
-      MINIO_ROOT_USER: minio_admin
-      MINIO_ROOT_PASSWORD: minio_password
+      MINIO_ROOT_USER: ${MLFLOW_S3_ACCESS_KEY:?Set MLFLOW_S3_ACCESS_KEY in .env}
+      MINIO_ROOT_PASSWORD: ${MLFLOW_S3_SECRET_KEY:?Set MLFLOW_S3_SECRET_KEY in .env}
     ports:
       - "9000:9000"
       - "9001:9001"
@@ -92,9 +77,6 @@ services:
       - epac_network
     restart: unless-stopped
 
-  # ============================================
-  # SERVICE 4 : Création automatique du bucket MinIO
-  # ============================================
   create-bucket:
     image: minio/mc:latest
     container_name: minio-mc
@@ -103,28 +85,25 @@ services:
         condition: service_healthy
     entrypoint: >
       /bin/sh -c "
-      echo '⏳ Attente que MinIO soit prêt...';
+      echo 'Waiting for MinIO...';
       sleep 10;
-      echo '🔧 Configuration de MinIO client...';
-      until /usr/bin/mc alias set myminio http://minio:9000 minio_admin minio_password; do
-        echo '⏳ En attente de MinIO...';
+      until /usr/bin/mc alias set myminio http://minio:9000 ${MLFLOW_S3_ACCESS_KEY:?Set MLFLOW_S3_ACCESS_KEY in .env} ${MLFLOW_S3_SECRET_KEY:?Set MLFLOW_S3_SECRET_KEY in .env}; do
+        echo 'Retrying MinIO connection...';
         sleep 2;
       done;
-      echo '📦 Création du bucket mlflow-artifacts...';
-      /usr/bin/mc mb myminio/mlflow-artifacts --ignore-existing;
-      echo '🔓 Configuration des permissions...';
-      /usr/bin/mc anonymous set public myminio/mlflow-artifacts;
-      echo '✅ Bucket prêt !';
+      /usr/bin/mc mb myminio/${MLFLOW_BUCKET_NAME:-mlflow-artifacts} --ignore-existing;
+      echo 'Bucket ready';
       exit 0;
       "
     networks:
       - epac_network
 
-  # ============================================
-  # SERVICE 5 : Serveur MLflow version 3.10.0
-  # ============================================
   mlflow-server:
-    image: python:3.10-slim
+    build:
+      context: .
+      dockerfile: Dockerfile.mlflow
+      args:
+        MLFLOW_VERSION: ${MLFLOW_VERSION:-3.10.0}
     container_name: mlflow-server
     depends_on:
       postgres-mlflow:
@@ -135,24 +114,16 @@ services:
       - "5000:5000"
     environment:
       MLFLOW_S3_ENDPOINT_URL: http://minio:9000
-      AWS_ACCESS_KEY_ID: minio_admin
-      AWS_SECRET_ACCESS_KEY: minio_password
-      AWS_DEFAULT_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: ${MLFLOW_S3_ACCESS_KEY:?Set MLFLOW_S3_ACCESS_KEY in .env}
+      AWS_SECRET_ACCESS_KEY: ${MLFLOW_S3_SECRET_KEY:?Set MLFLOW_S3_SECRET_KEY in .env}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
     command: >
-      sh -c "
-      echo '📦 Installation des dépendances...' &&
-      apt-get update && apt-get install -y --no-install-recommends gcc libpq-dev &&
-      echo '📥 Installation de MLflow 3.10.0...' &&
-      pip install --no-cache-dir mlflow==3.10.0 psycopg2-binary boto3 &&
-      echo '✅ Dépendances installées' &&
-      echo '🚀 Démarrage du serveur MLflow...' &&
       mlflow server
-      --backend-store-uri postgresql://mlflow_user:mlflow_password@postgres-mlflow:5432/mlflow_db
-      --default-artifact-root s3://mlflow-artifacts
+      --backend-store-uri postgresql://${MLFLOW_POSTGRES_USER:-mlflow_user}:${MLFLOW_POSTGRES_PASSWORD:?Set MLFLOW_POSTGRES_PASSWORD in .env}@postgres-mlflow:5432/${MLFLOW_POSTGRES_DB:-mlflow_db}
+      --default-artifact-root s3://${MLFLOW_BUCKET_NAME:-mlflow-artifacts}
       --host 0.0.0.0
       --port 5000
       --serve-artifacts
-      "
     networks:
       - epac_network
     restart: unless-stopped

@@ -27,15 +27,24 @@ venv/
 # MLflow
 # -----------------------
 mlruns/
+pricing__epac/mlruns/
+mlflow.db
 
 *.log
 
 # -----------------------
-# Models
+# Artifacts / Runtime
 # -----------------------
 pricing__epac/models/
+pricing__epac/artifacts/*
+pricing__epac/runtime/*
 *.pkl
 *.joblib
+!pricing__epac/artifacts/models/.gitkeep
+!pricing__epac/artifacts/dvc_tracking/.gitkeep
+!pricing__epac/runtime/logs/.gitkeep
+!pricing__epac/runtime/watcher/.gitkeep
+!pricing__epac/runtime/pipeline_results/.gitkeep
 
 # -----------------------
 # DATA
@@ -54,7 +63,6 @@ pricing__epac/data/consolidated/*
 pricing__epac/data/enriched/*
 pricing__epac/data/features/*
 pricing__epac/data/processed/*
-pricing__epac/data/pipeline_results/*
 pricing__epac/data/raw/dumps/sql/*
 
 # 4. KEEP STRUCTURE WITH .gitkeep
@@ -62,7 +70,6 @@ pricing__epac/data/raw/dumps/sql/*
 !pricing__epac/data/enriched/.gitkeep
 !pricing__epac/data/features/.gitkeep
 !pricing__epac/data/processed/.gitkeep
-!pricing__epac/data/pipeline_results/.gitkeep
 !pricing__epac/data/raw/dumps/sql/.gitkeep
 
 # -----------------------
@@ -76,3 +83,4 @@ pricing__epac/data/raw/dumps/sql/*
 # -----------------------
 tmp/
 temp/
+bash.exe.stackdump

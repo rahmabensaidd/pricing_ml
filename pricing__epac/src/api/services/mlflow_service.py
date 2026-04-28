@@ -1,12 +1,12 @@
 import mlflow
 import mlflow.pyfunc
 from mlflow.tracking import MlflowClient
-import pandas as pd
 import logging
 import json
 from typing import Optional, Dict, List
 from pricing__epac.src.config.settings import settings
 from pricing__epac.src.api.ml.model_loader import ModelLoader
+from pricing__epac.src.api.ml.model_registry import ModelRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -15,41 +15,16 @@ class MLflowService:
     """Service for MLflow interactions - handles all MLflow operations"""
 
     def __init__(self):
+        mlflow.set_tracking_uri(settings.MLFLOW_TRACKING_URI)
         self.model_loader = ModelLoader()
         self.client = MlflowClient()
-        mlflow.set_tracking_uri(settings.MLFLOW_TRACKING_URI)
+        self.model_registry = ModelRegistry()
 
     def get_client_features_data(self, siren: str) -> Optional[Dict]:
         """
         Retrieves client features from MLflow ClientFeatures model
         """
-        try:
-            model_info = self.model_loader.get_model(settings.MODEL_NAME_CLIENT_FEATURES)
-
-            if not model_info:
-                logger.warning("Client features model not available")
-                return None
-
-            client_model = model_info["model"]
-
-            # Try different methods to get client features
-            if hasattr(client_model, 'get_client_features'):
-                # Custom method if available
-                return client_model.get_client_features(siren)
-            else:
-                # Standard prediction approach
-                result = client_model.predict(pd.DataFrame({"siren": [siren]}))
-                if isinstance(result, pd.DataFrame) and not result.empty:
-                    return result.iloc[0].to_dict()
-                elif isinstance(result, dict):
-                    return result
-                elif isinstance(result, list) and len(result) > 0:
-                    return result[0]
-
-            return None
-        except Exception as e:
-            logger.error(f"Error getting client features for siren {siren}: {e}")
-            return None
+        return self.model_loader.get_client_features_data(siren)
 
     def get_family_model(self, binding_type: str, model_type: str) -> Optional[Dict]:
         """
@@ -64,7 +39,7 @@ class MLflowService:
         """
         safe = self._sanitize_name(binding_type)
         model_name = f"PricingModel_{safe}_{model_type}"
-        return self.model_loader.get_model(model_name)
+        return self.model_loader.get_production_model_info(model_name)
 
     def get_couple_model(self, binding_type: str, siren: str, model_type: str) -> Optional[Dict]:
         """
@@ -83,7 +58,7 @@ class MLflowService:
         safe_binding = self._sanitize_name(binding_type)
         safe_siren = self._sanitize_name(siren)
         model_name = f"PricingModel_{safe_binding}__{safe_siren}_{model_type}"
-        return self.model_loader.get_model(model_name)
+        return self.model_loader.get_production_model_info(model_name)
 
     def get_model_by_name(self, model_name: str) -> Optional[Dict]:
         """
@@ -95,7 +70,7 @@ class MLflowService:
         Returns:
             Model info dictionary or None if not found
         """
-        return self.model_loader.get_model(model_name)
+        return self.model_loader.get_production_model_info(model_name)
 
     def list_available_models(self) -> List[str]:
         """
@@ -104,7 +79,7 @@ class MLflowService:
         Returns:
             List of model names
         """
-        return list(self.model_loader._models.keys())
+        return [model["name"] for model in self.model_registry.list_production_models()]
 
     def get_model_metrics(self, model_name: str) -> Dict:
         """
@@ -116,7 +91,7 @@ class MLflowService:
         Returns:
             Dictionary of metrics
         """
-        model_info = self.model_loader.get_model(model_name)
+        model_info = self.model_loader.get_production_model_info(model_name)
         if model_info:
             return model_info.get("metrics", {})
         return {}
@@ -131,7 +106,7 @@ class MLflowService:
         Returns:
             Dictionary of feature importance
         """
-        model_info = self.model_loader.get_model(model_name)
+        model_info = self.model_loader.get_production_model_info(model_name)
         if model_info:
             return model_info.get("feature_importance", {})
         return {}
@@ -232,7 +207,7 @@ class MLflowService:
             Run information dictionary or None
         """
         try:
-            model_info = self.model_loader.get_model(model_name)
+            model_info = self.model_loader.get_production_model_info(model_name)
             if model_info and model_info.get("run_id"):
                 run = self.client.get_run(model_info["run_id"])
                 return {

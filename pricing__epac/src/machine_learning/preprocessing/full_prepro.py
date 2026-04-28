@@ -212,6 +212,7 @@ import joblib
 import pandas as pd
 import yaml
 from dateutil import parser
+from pricing__epac.src.shared.logging import configure_logging
 
 
 # ========== CONFIGURATION ==========
@@ -265,44 +266,41 @@ class PreprocessingConfig:
 
     def __post_init__(self):
         if self.ml_model_path is None:
-            self.ml_model_path = get_project_root() / "pricing__epac" / "src" / "machine_learning" / "models"
+            self.ml_model_path = get_project_root() / "pricing__epac" / "src" / "machine_learning" / "training"
 
 
 # ========== LOGGING SETUP ==========
 def setup_logging(log_level: str = 'INFO', log_file: Optional[Path] = None):
     """Configure logging with environment variable support"""
-    log_level_map = {
-        'DEBUG': logging.DEBUG,
-        'INFO': logging.INFO,
-        'WARNING': logging.WARNING,
-        'ERROR': logging.ERROR
-    }
-
-    level = log_level_map.get(os.getenv('LOG_LEVEL', log_level).upper(), logging.INFO)
-
-    handlers = [logging.StreamHandler()]
-    if log_file:
-        try:
-            handlers.append(logging.FileHandler(log_file, encoding='utf-8'))
-        except Exception:
-            pass
-
-    logging.basicConfig(
-        level=level,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        handlers=handlers
-    )
-
     # Suppress warnings
     warnings.filterwarnings("ignore", category=UserWarning)
-
-    return logging.getLogger(__name__)
+    effective_level = os.getenv('LOG_LEVEL', log_level).upper()
+    return configure_logging(level=effective_level, log_file=log_file, logger_name=__name__)
 
 
 # ========== PATH CONFIGURATION ==========
 def get_project_root() -> Path:
     """Return the project root directory."""
-    return Path(os.getenv('PROJECT_ROOT', Path(__file__).resolve().parents[5]))
+    env_root = os.getenv('PROJECT_ROOT')
+    if env_root:
+        return Path(env_root)
+
+    current = Path(__file__).resolve()
+    for parent in current.parents:
+        if (parent / "pyproject.toml").exists() and (parent / "pricing__epac").exists():
+            return parent
+
+    return current.parents[4]
+
+
+def get_package_root() -> Path:
+    """Return the package root directory."""
+    return get_project_root() / "pricing__epac"
+
+
+def get_data_root() -> Path:
+    """Return the package data directory used by the pipeline."""
+    return get_package_root() / "data"
 
 
 # Load configuration
@@ -368,7 +366,7 @@ def load_mappings(config: PreprocessingConfig = CONFIG) -> Dict[str, Dict[str, s
     Returns:
         Dictionary of column mappings
     """
-    mappings_path = PROJECT_ROOT / "pricing__epac" / "src" / "config" / "mappings.yaml"
+    mappings_path = get_package_root() / "src" / "config" / "mappings.yaml"
 
     if not mappings_path.exists():
         logger.warning(f"Mapping file not found: {mappings_path}")
@@ -913,7 +911,7 @@ def save_quality_metrics(metrics: Dict[str, Any], output_path: Optional[Path] = 
     import json
 
     if output_path is None:
-        output_path = get_project_root() / "data" / "processed" / "quality_metrics.json"
+        output_path = get_data_root() / "processed" / "quality_metrics.json"
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -1017,13 +1015,13 @@ def full_preprocessing(
     df = remove_duplicates(df)
     df = drop_constant_columns(df, config)
 
-    # Step 4: Apply mappings (before uppercase to preserve case)
-    logger.info("\n📋 STEP 4: Applying value mappings")
-    df = apply_all_mappings(df, config)
-
-    # Step 5: Uppercase strings
-    logger.info("\n🔠 STEP 5: String normalization")
+    # Step 4: Uppercase strings first
+    logger.info("\n🔠 STEP 4: String normalization")
     df = uppercase_string_columns(df, config=config)
+
+    # Step 5: Apply mappings
+    logger.info("\n📋 STEP 5: Applying value mappings")
+    df = apply_all_mappings(df, config)
 
     # Step 6: Date processing
     logger.info("\n📅 STEP 6: Date processing")
@@ -1077,7 +1075,7 @@ def save_processed(
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"pricing_fully_cleaned_{timestamp}.xlsx"
 
-    out_dir = get_project_root() / "data" / "processed"
+    out_dir = get_data_root() / "processed"
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / filename
 
@@ -1089,11 +1087,15 @@ def save_processed(
 
 def cleanup_temp_files():
     """Clean up temporary files."""
-    sql_dumps_path = get_project_root() / "pricing__epac" / "data" / "raw" / "dumps" / "sql"
+    sql_dumps_path = get_data_root() / "raw" / "dumps" / "sql"
 
     if sql_dumps_path.exists():
-        shutil.rmtree(sql_dumps_path, ignore_errors=True)
-        logger.info(f"Temporary folder cleaned: {sql_dumps_path}")
+        for path in sql_dumps_path.iterdir():
+            if path.is_file():
+                path.unlink(missing_ok=True)
+            elif path.is_dir():
+                shutil.rmtree(path, ignore_errors=True)
+        logger.info(f"Temporary SQL dump folder cleaned: {sql_dumps_path}")
 
 
 # ========== ENTRY POINT ==========
@@ -1134,7 +1136,7 @@ Examples:
         if args.input:
             input_path = args.input
         else:
-            input_path = get_project_root() / "pricing__epac" / "data" / "consolidated" / "dataset_complet.xlsx"
+            input_path = get_data_root() / "consolidated" / "dataset_complet.xlsx"
 
         # Run preprocessing
         df_final = full_preprocessing(input_path, verbose=args.verbose)

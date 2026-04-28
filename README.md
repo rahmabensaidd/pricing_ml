@@ -1,212 +1,161 @@
-# Pricing MLOps Pipeline
+# Pricing EPAC
 
-![Python](https://img.shields.io/badge/Python-3.9+-blue.svg)
-![MLflow](https://img.shields.io/badge/MLflow-2.0+-orange.svg)
-![Prefect](https://img.shields.io/badge/Prefect-2.0+-green.svg)
-![FastAPI](https://img.shields.io/badge/FastAPI-0.100+-teal.svg)
-![DVC](https://img.shields.io/badge/DVC-3.0+-red.svg)
-![Docker](https://img.shields.io/badge/Docker-%E2%9C%93-blue.svg)
-![License](https://img.shields.io/badge/License-MIT-yellow.svg)
+Pricing EPAC is an end-to-end pricing platform for print products.  
+It ingests SQL dumps, builds cleaned datasets, trains multiple ML models, tracks them in MLflow, and serves predictions through a FastAPI API.
 
-**Complete MLOps pipeline** for pricing models with experiment tracking (MLflow), data & model versioning (DVC), pipeline orchestration (Prefect) and production-ready prediction API (FastAPI).
+## What This Project Does
 
----
+Main business flow:
 
-## 📑 Table of Contents
+1. The watcher monitors `pricing__epac/data/raw/dumps/sql`.
+2. SQL dumps are consolidated into a single dataset.
+3. `full_prepro` cleans and normalizes data.
+4. Client history features are computed.
+5. Global, family, and pair models are trained.
+6. Models and metrics are logged to MLflow.
+7. The API serves predictions from production models.
 
-- [Overview](#overview)
-- [Key Features](#key-features)
-- [Architecture](#architecture)
-- [Technologies](#technologies)
-- [Installation](#installation)
-- [Usage & Pipeline Execution](#usage--pipeline-execution)
-- [Project Structure](#project-structure)
-- [MLflow & Model Registry](#mlflow--model-registry)
-- [API & Deployment](#api--deployment)
-- [Monitoring & Interpretability](#monitoring--interpretability)
-- [Contributing](#contributing)
-- [License](#license)
+## Current Layout
 
----
+- Code: `pricing__epac/src`
+- Business data: `pricing__epac/data`
+- Artifacts: `pricing__epac/artifacts`
+- Runtime state (logs, PID, watcher metrics): `pricing__epac/runtime`
 
-## 🎯 Overview
+Core packages:
 
-This project implements a **modern, production-grade MLOps pipeline** dedicated to **pricing models** (B2B printing & binding services).
+- `pricing__epac/src/api`
+- `pricing__epac/src/config`
+- `pricing__epac/src/machine_learning/preprocessing`
+- `pricing__epac/src/machine_learning/training`
+- `pricing__epac/src/machine_learning/orchestration`
+- `pricing__epac/src/machine_learning/flows`
+- `pricing__epac/src/shared`
 
-It covers the full lifecycle:
+## Requirements
 
-- Data consolidation from SQL/CSV sources
-- Advanced feature engineering (client behavior: elasticity, seniority, recency…)
-- Multi-level model training (global → family → client-specific)
-- Experiment tracking & model registry
-- Data & artifact versioning
-- REST API for real-time predictions
-
----
-
-## ✨ Key Features
-
-| Feature                        | Description                                                                 |
-|:-------------------------------|:----------------------------------------------------------------------------|
-| ✅ SQL → Consolidated dataset  | Automatic consolidation of multiple SQL dumps / CSV files                   |
-| ✅ Advanced client features    | Price elasticity, seniority (years), recency, historical avg price         |
-| ✅ Multi-level modeling        | Global model + models per `BindingType` + models per `(BindingType × SIREN)`|
-| ✅ 7 regression algorithms     | OLS, Ridge, Lasso, RandomForest, XGBoost, LightGBM, CatBoost               |
-| ✅ MLflow Tracking & Registry  | Full experiment tracking, model versioning, aliases (`production`, `staging`) |
-| ✅ DVC data/model versioning   | Hash-based tracking of datasets, features & trained models                 |
-| ✅ FastAPI prediction service  | Production-ready REST API with OpenAPI documentation                        |
-| ✅ Model interpretability      | SHAP values, feature importance, regression formulas (when applicable)     |
-| ✅ Automated comparison tables | RMSE / R² / MAE tables + bar charts for model ranking                      |
-
----
-
-## 🏗️ Architecture
-┌─────────────────┐     ┌────────────────────┐     ┌────────────────────┐
-│  SQL / CSV      │────▶│ Consolidation      │────▶│ Preprocessing      │
-│  (multiple)     │     │ scripts/           │     │ pricing_epac/      │
-└─────────────────┘     └────────────────────┘     └────────────────────┘
-│
-▼
-┌────────────────────┐     ┌────────────────────┐     ┌────────────────────┐
-│ Client Features    │◀───▶│ Feature Engineering│     │ Training           │
-│ (elasticity, etc.) │     │ client_history...  │     │ 3 levels           │
-└────────────────────┘     └────────────────────┘     └───────────┬────────┘
-│
-┌──────────────────────────────────────────────┘
-│
-┌────────────────────┐       ┌────────────────────┐
-│ MLflow Tracking    │◀─────▶│ MLflow Model       │
-│ & Experiments      │       │ Registry           │
-└──────────┬─────────┘       └──────────┬─────────┘
-│                             │
-▼                             ▼
-┌────────────────────┐       ┌────────────────────┐
-│ DVC Versioning     │       │ FastAPI Prediction │
-│ (data + models)    │       │ API                │
-└────────────────────┘       └────────────────────┘
-
-**Training levels**:
-
-1. **Global model** — one model for all data  
-2. **Family models** — one model per `BindingType`  
-3. **Couple models** — one model per `(BindingType × SIREN)` pair
-
----
-
-## 🛠️ Technologies
-
-### Core MLOps stack
-
-| Technology   | Version     | Role                              |
-|--------------|-------------|-----------------------------------|
-| Python       | 3.9+        | Language                          |
-| Prefect 2    | 2.10+       | Pipeline orchestration            |
-| MLflow       | 2.9+        | Experiment tracking & registry    |
-| DVC          | 3.0+        | Data & model versioning           |
-| FastAPI      | 0.100+      | REST API                          |
-| Poetry       | latest      | Dependency management             |
-| Docker       | —           | Containerization (MinIO, API…)    |
-
-### Data Science stack
-
-- pandas, numpy
-- scikit-learn, xgboost, lightgbm, catboost
-- SHAP, matplotlib/seaborn
-- joblib, pickle
-
-### Storage / Backend
-
-- SQLite (default MLflow backend)
-- MinIO (S3-compatible artifact store – optional)
-
----
-
-## 📦 Installation
-
-### Prerequisites
-
-- Python 3.9+
+- Python 3.11+
 - Poetry
-- Git
-- Docker (optional – MinIO / API container)
+- Docker + Docker Compose
+- A valid `.env` file at the repository root
 
-### Quick setup
+## Key Environment Variables
+
+Minimum required variables:
+
+- `MYSQL_PASSWORD`
+- `MLFLOW_TRACKING_URI`
+- `MLFLOW_POSTGRES_USER`
+- `MLFLOW_POSTGRES_PASSWORD`
+- `MLFLOW_POSTGRES_DB`
+- `MLFLOW_S3_ENDPOINT_URL`
+- `AWS_ACCESS_KEY_ID`
+- `AWS_SECRET_ACCESS_KEY`
+
+## Quick Start
+
+### 1. Install dependencies
 
 ```bash
-# 1. Clone repository
-git clone https://github.com/rahmabensaidd/pricing_ml.git
-cd pricing_ml
-
-# 2. Install dependencies with Poetry
 poetry install
-
-# 3. Activate virtual environment
-poetry shell
-
-# 4. (Recommended) Start MLflow server
-mlflow server \
-  --backend-store-uri sqlite:///mlflow.db \
-  --default-artifact-root ./mlruns \
-  --host 0.0.0.0 \
-  --port 5000
-
-# 5. (Optional) Start MinIO (S3-compatible storage)
-docker run -d -p 9000:9000 -p 9001:9001 \
-  -e "MINIO_ROOT_USER=minioadmin" \
-  -e "MINIO_ROOT_PASSWORD=minioadmin" \
-  --name minio \
-  minio/minio server /data --console-address ":9001"
 ```
-## Usage & Pipeline Execution
-## Project Structure (main folders)
-pricing_ml/
-├── data/
-│   ├── raw/            ← SQL dumps, CSVs
-│   ├── consolidated/
-│   ├── processed/
-│   ├── features/
-│   └── enriched/
-├── models/             ← trained pipelines (.joblib)
-├── mlruns/             ← MLflow artifacts
-├── pricing_epac/
-│   ├── preprocessing/
-│   ├── models/
-│   │   ├── client_history_features.py
-│   │   ├── train_and_compare.py
-│   │   ├── train_by_family_bindingtype.py
-│   │   └── train_by_family_bindingtypeandsiren.py
-│   └── pipeline.py     ← main Prefect flow
-├── scripts/
-│   └── consolidate_data.py
-└── README.md
 
-## MLflow & Model Registry
-Models are registered under these names:
+### 2. Start the MLflow stack
 
-PricingModelGlobal
-PricingModel_<BindingType>_Linear / ..._NonLinear
-PricingModel_<BindingType>__<SIREN>_Linear / ..._NonLinear
-ClientFeatures (historical client features)
+The target stack uses:
 
-Aliases in use:
+- PostgreSQL for MLflow backend store
+- MinIO for artifact storage
 
-production → currently deployed version
-staging    → pre-production / validation (optional)
-archived   → old versions (tagged, not aliased)
-## API & Deployment
-## Monitoring & Interpretability
-RMSE, R², MAE per model
-SHAP values (tree-based models)
-Feature importance plots
-Regression formulas (linear models)
-Client elasticity distribution
-Correlation matrices
+```bash
+docker compose up -d
+```
 
-All artifacts are logged in MLflow.
-## Contributions are welcome!
+Useful services:
 
-Fork the repository
-Create a feature branch (git checkout -b feature/amazing-thing)
-Commit your changes (git commit -m 'Add some amazing thing')
-Push to the branch (git push origin feature/amazing-thing)
-Open a Pull Request
+- MLflow: `http://localhost:5000`
+- MinIO console: `http://localhost:9001`
+
+### 3. Start the API
+
+```bash
+poetry run python -m pricing__epac.src.api.main --reload
+```
+
+Useful endpoints:
+
+- `http://127.0.0.1:8000/health`
+- `http://127.0.0.1:8000/docs`
+
+### 4. Start the watcher
+
+```bash
+poetry run python -m pricing__epac.src.machine_learning.orchestration.watcher
+```
+
+Watcher outputs:
+
+- Logs: `pricing__epac/runtime/logs`
+- PID and metrics: `pricing__epac/runtime/watcher`
+
+### 5. Run the pipeline manually
+
+```bash
+poetry run python -m pricing__epac.src.machine_learning.flows.pricing_full_pipeline
+```
+
+## Useful Tree
+
+```text
+pricing__epac/
+  src/
+    api/
+      schemas/
+      services/
+      ml/
+    config/
+    machine_learning/
+      preprocessing/
+      training/
+      orchestration/
+      flows/
+    shared/
+    tests/
+  data/
+    raw/
+    consolidated/
+    processed/
+    enriched/
+    features/
+  artifacts/
+    models/
+    dvc_tracking/
+  runtime/
+    logs/
+    watcher/
+    pipeline_results/
+```
+
+## Local Validation
+
+Quick checks:
+
+```bash
+poetry run python -c "import pricing__epac.src.api.pricing_controller"
+poetry run python -c "from pricing__epac.src.machine_learning.orchestration.watcher import SQLFileHandler"
+poetry run python -m pytest pricing__epac/src/tests -q
+```
+
+## Migration Notes
+
+- `pricing__epac/mlruns` is no longer the normal runtime path when MLflow runs on PostgreSQL + MinIO.
+- Runtime outputs were moved from data folders to `pricing__epac/runtime`.
+- Artifacts are now under `pricing__epac/artifacts`.
+- Some compatibility wrappers still exist and can be removed progressively:
+  - `pricing__epac/src/api/models`
+  - `pricing__epac/src/machine_learning/models`
+  - `pricing__epac/src/machine_learning/scripts`
+
+## More Documentation
+
+- [ARCHITECTURE.md](./ARCHITECTURE.md)

@@ -1,26 +1,19 @@
-import sys
-import os
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
-
 from fastapi import FastAPI, HTTPException
 import logging
 import time
 from datetime import datetime
 import pandas as pd
-import traceback
 
-from pricing__epac.src.api.models.pricing_models import PricingRequest, PricingResponse
+from pricing__epac.src.api.schemas.pricing_models import PricingRequest, PricingResponse
 from pricing__epac.src.api.services.pricing_service import PricingService
 from pricing__epac.src.api.services.mlflow_service import MLflowService
 from pricing__epac.src.api.ml.model_loader import ModelLoader
 from pricing__epac.src.api.ml.model_registry import ModelRegistry
 from pricing__epac.src.config.settings import settings
 from pricing__epac.src.config.feature_config import NUM_COLS, CAT_COLS, ALL_FEATURES
+from pricing__epac.src.shared.logging import get_logger
 
-# Logging configuration
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Create FastAPI app
 app = FastAPI(
@@ -51,7 +44,14 @@ async def root():
             "cat_cols": len(CAT_COLS),
             "total_features": len(ALL_FEATURES)
         },
-        "endpoints": ["/predict", "/health", "/models", "/features/client/{siren}", "/debug/mlflow"]
+        "endpoints": [
+            "/predict",
+            "/health",
+            "/models",
+            "/features/client/{siren}",
+            "/debug/mlflow",
+            "/admin/reload-model/{model_name}"
+        ]
     }
 
 
@@ -62,8 +62,10 @@ async def health_check():
         start = time.time()
 
         mlflow_connected = mlflow_service.check_mlflow_connection()
-        global_model = model_loader.get_model(settings.MODEL_NAME_GLOBAL)
-        client_features = model_loader.get_model(settings.MODEL_NAME_CLIENT_FEATURES)
+        global_model = model_loader.get_production_model_info(settings.MODEL_NAME_GLOBAL)
+        client_features_model = model_loader.get_production_model_info(
+            settings.MODEL_NAME_CLIENT_FEATURES
+        )
 
         return {
             "status": "healthy" if mlflow_connected else "degraded",
@@ -72,11 +74,11 @@ async def health_check():
             "mlflow_connected": mlflow_connected,
             "models": {
                 "global": global_model is not None,
-                "client_features": client_features is not None
+                "client_features": client_features_model is not None
             }
         }
     except Exception as e:
-        logger.error(f"Health check failed: {e}")
+        logger.error(f"Health check failed: {e}", exc_info=True)
         return {"status": "unhealthy", "error": str(e)}
 
 
@@ -87,6 +89,7 @@ async def list_production_models():
         models = model_registry.list_production_models()
         return {"count": len(models), "models": models}
     except Exception as e:
+        logger.error(f"Error listing models: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -99,10 +102,14 @@ async def predict(request: PricingRequest):
 @app.get("/features/client/{siren}")
 async def get_client_features_endpoint(siren: str):
     """Retrieve features for a client"""
-    data = mlflow_service.get_client_features_data(siren)
-    if not data:
-        return {"siren": siren, "found": False}
-    return {"siren": siren, "found": True, "features": data}
+    try:
+        data = mlflow_service.get_client_features_data(siren)
+        if not data:
+            return {"siren": siren, "found": False}
+        return {"siren": siren, "found": True, "features": data}
+    except Exception as e:
+        logger.error(f"Error retrieving client features for {siren}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/debug/mlflow")
@@ -116,8 +123,8 @@ async def debug_mlflow():
         results["mlflow_connected"] = mlflow_service.check_mlflow_connection()
         results["experiments_count"] = mlflow_service.get_experiments_count()
 
-        # 2. Check PricingModelGlobal
-        global_model = model_loader.get_model(settings.MODEL_NAME_GLOBAL)
+        # 2. Check global model
+        global_model = model_loader.get_production_model_info(settings.MODEL_NAME_GLOBAL)
         if global_model:
             results["global_model"] = {
                 "name": settings.MODEL_NAME_GLOBAL,
@@ -125,40 +132,72 @@ async def debug_mlflow():
                 "alias": settings.ALIAS_PRODUCTION,
                 "run_id": global_model["run_id"],
                 "loaded": True,
-                "metrics": global_model.get("metrics", {})
+                "metrics": global_model.get("metrics", {}),
+                "description": global_model.get("description", ""),
+                "shap_available": global_model.get("shap_available", False)
             }
         else:
-            # Try to get from registry
             mv = model_registry.get_model_version_by_alias(settings.MODEL_NAME_GLOBAL)
             results["global_model"] = mv if mv else {"error": "No production alias found"}
 
-        # 3. Check ClientFeatures
-        client_model = model_loader.get_model(settings.MODEL_NAME_CLIENT_FEATURES)
+        # 3. Check client features model
+        client_model = model_loader.get_production_model_info(
+            settings.MODEL_NAME_CLIENT_FEATURES
+        )
         if client_model:
             results["client_features_model"] = {
                 "name": settings.MODEL_NAME_CLIENT_FEATURES,
                 "version": client_model["version"],
-                "loaded": True
+                "alias": settings.ALIAS_PRODUCTION,
+                "run_id": client_model["run_id"],
+                "loaded": True,
+                "metrics": client_model.get("metrics", {}),
+                "description": client_model.get("description", "")
             }
         else:
             mv = model_registry.get_model_version_by_alias(settings.MODEL_NAME_CLIENT_FEATURES)
-            results["client_features_model"] = mv if mv else {"error": "No production alias found"}
+            results["client_features_model"] = mv if mv else {
+                "error": "No production alias found"
+            }
 
-        # 4. Loaded models
-        results["loaded_models"] = list(model_loader._models.keys())
+        # 4. Loader behavior
+        results["loader_mode"] = "no_cache"
+        results["loaded_models"] = []
 
         return results
+
     except Exception as e:
-        return {"error": str(e), "traceback": traceback.format_exc()}
+        logger.error(f"MLflow debug endpoint failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/admin/reload-model/{model_name}")
 async def reload_model(model_name: str):
-    """Admin endpoint to force reload a model"""
+    """
+    Admin endpoint to force a fresh fetch of a model from MLflow.
+
+    Note:
+    ModelLoader is no-cache, so there is no true reload operation.
+    This endpoint simply re-fetches the production model info.
+    """
     try:
-        model_info = model_loader.reload_model(model_name)
+        model_info = model_loader.get_production_model_info(model_name)
+
         if model_info:
-            return {"status": "success", "model": model_name, "version": model_info["version"]}
-        return {"status": "error", "message": f"Model {model_name} not found"}
+            return {
+                "status": "success",
+                "message": "Model fetched fresh from MLflow",
+                "model": model_name,
+                "version": model_info["version"],
+                "alias": model_info["alias"],
+                "run_id": model_info["run_id"]
+            }
+
+        return {
+            "status": "error",
+            "message": f"Model {model_name} not found in MLflow with alias '{settings.ALIAS_PRODUCTION}'"
+        }
+
     except Exception as e:
+        logger.error(f"Error reloading model {model_name}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))

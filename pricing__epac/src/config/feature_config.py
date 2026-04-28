@@ -57,6 +57,18 @@ INT_COLS = [
     "three_hole_drill"
 ]
 
+BOOLEAN_INT_COLS = [
+    "security_label",
+    "has_coil",
+    "has_insert",
+    "has_tab",
+    "has_backcover",
+    "perf",
+    "double_sided_cover",
+    "shrinkwrap",
+    "three_hole_drill"
+]
+
 FLOAT_COLS = ["height", "thickness", "width"]
 
 # ==============================================
@@ -64,22 +76,22 @@ FLOAT_COLS = ["height", "thickness", "width"]
 # ==============================================
 
 KNOWN_CATEGORIES = {
-    "text_paper_type": ["BIRCH_W40_TB", "80_GLOSS_TEXT", "70_OFFSET", "NONE", "missing", "unknown"],
-    "text_color": ["4/4", "4/0", "1/1", "NONE", "missing", "unknown"],
-    "cover_finish_type": ["LAYFLAT-GLOSS", "GLOSS", "MATTE", "NONE", "missing", "unknown"],
-    "cover_color": ["4/0", "4/4", "1/0", "NONE", "missing", "unknown"],
-    "cover_size": ["L", "M", "S", "XL", "NONE", "missing", "unknown"],
-    "cover_paper_type": ["12PT_C1S", "100_GLOSS_TEXT", "80_GLOSS_TEXT", "NONE", "missing", "unknown"],
-    "head_and_tail": ["NONE", "BLACK", "WHITE", "BLACK & WHITE", "missing", "unknown"],
-    "priority_level": ["NORMAL", "HIGH1", "HIGH2", "LOW", "missing", "unknown"],
-    "binding_type": ["SS", "CASEBIND", "PERFECT", "SPIRAL", "missing", "unknown"],
-    "coil_type": ["NONE", "METAL", "PLASTIC", "missing", "unknown"],
-    "tab_color": ["NONE", "WHITE", "COLOR", "missing", "unknown"],
-    "insert_paper_type": ["NONE", "80_GLOSS_TEXT", "70_OFFSET", "missing", "unknown"],
-    "case_finish_type": ["NONE", "LAYFLAT-GLOSS", "GLOSS", "missing", "unknown"],
-    "spine_type": ["NONE", "ROUND", "SQUARE", "missing", "unknown"],
-    "label_type": ["NONE", "STANDARD", "CUSTOM", "missing", "unknown"],
-    "siren": ["SAV", "missing", "unknown"]
+    "text_paper_type": ["BIRCH_W40_TB", "80_GLOSS_TEXT", "70_OFFSET", "NONE", "MISSING", "UNKNOWN"],
+    "text_color": ["4/4", "4/0", "1/1", "NONE", "MISSING", "UNKNOWN"],
+    "cover_finish_type": ["LAYFLAT-GLOSS", "GLOSS", "MATTE", "NONE", "MISSING", "UNKNOWN"],
+    "cover_color": ["4/0", "4/4", "1/0", "NONE", "MISSING", "UNKNOWN"],
+    "cover_size": ["L", "M", "S", "XL", "NONE", "MISSING", "UNKNOWN"],
+    "cover_paper_type": ["12PT_C1S", "100_GLOSS_TEXT", "80_GLOSS_TEXT", "NONE", "MISSING", "UNKNOWN"],
+    "head_and_tail": ["NONE", "BLACK", "WHITE", "BLACK & WHITE", "MISSING", "UNKNOWN"],
+    "priority_level": ["NORMAL", "HIGH1", "HIGH2", "LOW", "MISSING", "UNKNOWN"],
+    "binding_type": ["SS", "CASEBIND", "PERFECT", "SPIRAL", "MISSING", "UNKNOWN"],
+    "coil_type": ["NONE", "METAL", "PLASTIC", "MISSING", "UNKNOWN"],
+    "tab_color": ["NONE", "WHITE", "COLOR", "MISSING", "UNKNOWN"],
+    "insert_paper_type": ["NONE", "80_GLOSS_TEXT", "70_OFFSET", "MISSING", "UNKNOWN"],
+    "case_finish_type": ["NONE", "LAYFLAT-GLOSS", "GLOSS", "MISSING", "UNKNOWN"],
+    "spine_type": ["NONE", "ROUND", "SQUARE", "MISSING", "UNKNOWN"],
+    "label_type": ["NONE", "STANDARD", "CUSTOM", "MISSING", "UNKNOWN"],
+    "siren": ["SAV", "MISSING", "UNKNOWN"]
 }
 
-FALLBACK_CATEGORY = "missing"
+FALLBACK_CATEGORY = "MISSING"

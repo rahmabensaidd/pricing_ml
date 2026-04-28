@@ -1,6 +1,9 @@
-from mlflow.tracking import MlflowClient
 import logging
-from typing import List, Dict, Optional
+from typing import Dict, List, Optional
+
+import mlflow
+from mlflow.tracking import MlflowClient
+
 from pricing__epac.src.config.settings import settings
 
 logger = logging.getLogger(__name__)
@@ -10,6 +13,7 @@ class ModelRegistry:
     """Helper class for MLflow model registry operations"""
 
     def __init__(self):
+        mlflow.set_tracking_uri(settings.MLFLOW_TRACKING_URI)
         self.client = MlflowClient()
 
     def list_production_models(self) -> List[Dict]:
