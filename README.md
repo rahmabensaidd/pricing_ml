@@ -39,6 +39,12 @@ Core packages:
 - Docker + Docker Compose
 - A valid `.env` file at the repository root
 
+You can bootstrap env vars from:
+
+```bash
+cp .env.example .env
+```
+
 ## Key Environment Variables
 
 Minimum required variables:
@@ -71,10 +77,19 @@ The target stack uses:
 docker compose up -d
 ```
 
+This will start:
+
+- `mysql` on `localhost:3307`
+- `postgres-mlflow` on `localhost:5433`
+- `minio` on `localhost:9000` (console `:9001`)
+- `mlflow-server` on `localhost:5000`
+- `pricing-api` on `localhost:8000`
+
 Useful services:
 
 - MLflow: `http://localhost:5000`
 - MinIO console: `http://localhost:9001`
+- Pricing API docs: `http://localhost:8000/docs`
 
 ### 3. Start the API
 
@@ -145,6 +160,27 @@ poetry run python -c "import pricing__epac.src.api.pricing_controller"
 poetry run python -c "from pricing__epac.src.machine_learning.orchestration.watcher import SQLFileHandler"
 poetry run python -m pytest pricing__epac/src/tests -q
 ```
+
+## Docker Automation on Main
+
+This repository includes GitHub Actions workflow:
+
+- `.github/workflows/docker-pricing.yml`
+
+Trigger:
+
+- On push to `main`
+- Manual run (`workflow_dispatch`)
+
+It builds and pushes:
+
+- `${DOCKERHUB_USERNAME}/pricing-epac-api`
+- `${DOCKERHUB_USERNAME}/pricing-epac-mlflow`
+
+Required GitHub secrets:
+
+- `DOCKERHUB_USERNAME`
+- `DOCKERHUB_TOKEN`
 
 ## Migration Notes
 
