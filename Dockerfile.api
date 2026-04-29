@@ -17,7 +17,7 @@ RUN pip install --no-cache-dir "poetry==${POETRY_VERSION}"
 
 COPY pyproject.toml poetry.lock README.md ./
 COPY pricing__epac/__init__.py pricing__epac/__init__.py
-RUN poetry install --only main --no-ansi
+RUN poetry install --only main --no-root --no-ansi
 
 COPY pricing__epac ./pricing__epac
 
