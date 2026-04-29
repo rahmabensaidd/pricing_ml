@@ -1,6 +1,6 @@
 # Pricing EPAC
 
-Pricing EPAC is an end-to-end pricing platform for print products.  
+Pricingg EPAC is an end-to-end pricing platform for print products.  
 It ingests SQL dumps, builds cleaned datasets, trains multiple ML models, tracks them in MLflow, and serves predictions through a FastAPI API.
 
 ## What This Project Does
