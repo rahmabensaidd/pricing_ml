@@ -60,6 +60,73 @@ Minimum required variables:
 
 ## Quick Start
 
+### Run in Local (after git pull)
+
+Use these exact steps when a developer clones or pulls the repository and wants to run the project locally.
+
+1. Clone and enter the repository
+
+```bash
+git clone https://github.com/rahmabensaidd/pricing_ml.git
+cd pricing_ml
+```
+
+2. Prepare environment variables
+
+```bash
+cp .env.example .env
+```
+
+Then adjust values in `.env` if needed for your machine.
+
+3. Start the full local stack with Docker
+
+```bash
+docker compose up -d --build
+```
+
+4. Verify services
+
+- Pricing API docs: `http://localhost:8000/docs`
+- MLflow UI: `http://localhost:5000`
+- MinIO console: `http://localhost:9001`
+
+5. Check logs when debugging
+
+```bash
+docker compose logs -f pricing-api
+docker compose logs -f mlflow-server
+docker compose logs -f mysql
+```
+
+6. Stop services
+
+```bash
+docker compose down
+```
+
+7. Full cleanup (including Docker volumes/data)
+
+```bash
+docker compose down -v
+```
+
+### Optional: run API in local Python dev mode
+
+If you prefer running API directly from Python instead of Docker container:
+
+```bash
+poetry install
+poetry run python -m pricing__epac.src.api.main --reload
+```
+
+Optional ML jobs:
+
+```bash
+poetry run python -m pricing__epac.src.machine_learning.orchestration.watcher
+poetry run python -m pricing__epac.src.machine_learning.flows.pricing_full_pipeline
+```
+
 ### 1. Install dependencies
 
 ```bash

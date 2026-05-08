@@ -23,6 +23,7 @@ class PricingService:
     def __init__(self):
         self.model_loader = ModelLoader()  # Plus de singleton, nouvelle instance à chaque requête
         self.feature_service = FeatureService()
+        self._mlflow_unavailable_reason = "MLflow unavailable or unreachable"
 
     async def predict(self, request: PricingRequest) -> PricingResponse:
         """Main prediction logic - loads models fresh from MLflow"""
@@ -104,12 +105,17 @@ class PricingService:
         try:
             model_info = self.model_loader.get_production_model_info(settings.MODEL_NAME_GLOBAL)
             if not model_info:
+                error_message = (
+                    self._mlflow_unavailable_reason
+                    if not self.model_loader.check_mlflow_connection()
+                    else "Model not found in MLflow"
+                )
                 return PredictionGlobal(
                     model_name=settings.MODEL_NAME_GLOBAL,
                     model_version=0,
                     prediction=0.0,
                     available=False,
-                    error="Model not found in MLflow"
+                    error=error_message
                 )
 
             pred = model_info["model"].predict(input_df)[0]
@@ -144,9 +150,14 @@ class PricingService:
         try:
             model_info = self.model_loader.get_family_model(binding_type, "Linear")
             if not model_info:
+                reason = (
+                    self._mlflow_unavailable_reason
+                    if not self.model_loader.check_mlflow_connection()
+                    else "Model not found in MLflow"
+                )
                 return self._create_empty_family_response(
                     f"PricingModel_{self.model_loader._sanitize_name(binding_type)}_Linear",
-                    binding_type, True, "Model not found in MLflow"
+                    binding_type, True, reason
                 )
 
             pred = model_info["model"].predict(input_df)[0]
@@ -173,9 +184,14 @@ class PricingService:
         try:
             model_info = self.model_loader.get_family_model(binding_type, "NonLinear")
             if not model_info:
+                reason = (
+                    self._mlflow_unavailable_reason
+                    if not self.model_loader.check_mlflow_connection()
+                    else "Model not found in MLflow"
+                )
                 return self._create_empty_family_response(
                     f"PricingModel_{self.model_loader._sanitize_name(binding_type)}_NonLinear",
-                    binding_type, False, "Model not found in MLflow"
+                    binding_type, False, reason
                 )
 
             pred = model_info["model"].predict(input_df)[0]
@@ -204,9 +220,14 @@ class PricingService:
         try:
             model_info = self.model_loader.get_couple_model(binding_type, siren, "Linear")
             if not model_info:
+                reason = (
+                    self._mlflow_unavailable_reason
+                    if not self.model_loader.check_mlflow_connection()
+                    else "Model not found in MLflow"
+                )
                 return self._create_empty_couple_response(
                     f"PricingModel_{self.model_loader._sanitize_name(binding_type)}__{self.model_loader._sanitize_name(siren)}_Linear",
-                    couple_key, True, "Model not found in MLflow"
+                    couple_key, True, reason
                 )
 
             pred = model_info["model"].predict(input_df)[0]
@@ -234,9 +255,14 @@ class PricingService:
         try:
             model_info = self.model_loader.get_couple_model(binding_type, siren, "NonLinear")
             if not model_info:
+                reason = (
+                    self._mlflow_unavailable_reason
+                    if not self.model_loader.check_mlflow_connection()
+                    else "Model not found in MLflow"
+                )
                 return self._create_empty_couple_response(
                     f"PricingModel_{self.model_loader._sanitize_name(binding_type)}__{self.model_loader._sanitize_name(siren)}_NonLinear",
-                    couple_key, False, "Model not found in MLflow"
+                    couple_key, False, reason
                 )
 
             pred = model_info["model"].predict(input_df)[0]

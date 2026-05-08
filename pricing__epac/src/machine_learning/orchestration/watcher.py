@@ -452,6 +452,7 @@ class SQLFileHandler(FileSystemEventHandler):
         env["PYTHONUNBUFFERED"] = "1"
         env["PYTHONIOENCODING"] = "utf-8"
         env["MLFLOW_TRACKING_URI"] = self.config.mlflow_uri
+        env["PYTHONPATH"] = str(PROJECT_ROOT)
         if self.config.mysql_password:
             env["MYSQL_PASSWORD"] = self.config.mysql_password
 
@@ -462,7 +463,7 @@ class SQLFileHandler(FileSystemEventHandler):
         try:
             self.current_process = subprocess.Popen(
                 cmd,
-                cwd=PRICING_EPAC_ROOT,
+                cwd=PROJECT_ROOT,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 env=env,

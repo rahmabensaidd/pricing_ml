@@ -37,6 +37,9 @@ sqlalchemy = "^2.0.47"
 pymysql = "^1.1.2"
 boto3 = "1.28.0"
 python-dotenv = "^1.2.2"
+langchain-openai = "^1.2.1"
+langgraph = "^1.1.10"
+langchain-google-genai = "^2.1.12"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.0"
