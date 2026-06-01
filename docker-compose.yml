@@ -1,4 +1,4 @@
-networks:
+﻿networks:
   epac_network:
     driver: bridge
 
@@ -6,6 +6,7 @@ volumes:
   mysql_data:
   postgres_mlflow_data:
   minio_data:
+  prefect_data:
 
 services:
   mysql:
@@ -155,6 +156,7 @@ services:
       AWS_SECRET_ACCESS_KEY: ${MLFLOW_S3_SECRET_KEY:?Set MLFLOW_S3_SECRET_KEY in .env}
       AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
       MLFLOW_BUCKET_NAME: ${MLFLOW_BUCKET_NAME:-mlflow-artifacts}
+      PREFECT_API_URL: ${PREFECT_API_URL:-http://prefect-server:4200/api}
       MYSQL_HOST: mysql
       MYSQL_PORT: 3306
       MYSQL_USER: ${MYSQL_USER:-root}
@@ -163,3 +165,22 @@ services:
     networks:
       - epac_network
     restart: unless-stopped
+
+  prefect-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.prefect
+    image: ${DOCKERHUB_USERNAME:-local}/pricing-epac-prefect:latest
+    container_name: prefect-server
+    ports:
+      - "4200:4200"
+    environment:
+      PREFECT_SERVER_API_HOST: 0.0.0.0
+      PREFECT_SERVER_API_PORT: 4200
+      PREFECT_UI_API_URL: ${PREFECT_UI_API_URL:-http://localhost:4200/api}
+    volumes:
+      - prefect_data:/root/.prefect
+    networks:
+      - epac_network
+    restart: unless-stopped
+

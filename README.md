@@ -90,6 +90,7 @@ docker compose up -d --build
 - Pricing API docs: `http://localhost:8000/docs`
 - MLflow UI: `http://localhost:5000`
 - MinIO console: `http://localhost:9001`
+- Prefect UI: `http://localhost:4200`
 
 5. Check logs when debugging
 
@@ -150,12 +151,14 @@ This will start:
 - `postgres-mlflow` on `localhost:5433`
 - `minio` on `localhost:9000` (console `:9001`)
 - `mlflow-server` on `localhost:5000`
+- `prefect-server` on `localhost:4200`
 - `pricing-api` on `localhost:8000`
 
 Useful services:
 
 - MLflow: `http://localhost:5000`
 - MinIO console: `http://localhost:9001`
+- Prefect UI: `http://localhost:4200`
 - Pricing API docs: `http://localhost:8000/docs`
 
 ### 3. Start the API
@@ -243,6 +246,7 @@ It builds and pushes:
 
 - `${DOCKERHUB_USERNAME}/pricing-epac-api`
 - `${DOCKERHUB_USERNAME}/pricing-epac-mlflow`
+- `${DOCKERHUB_USERNAME}/pricing-epac-prefect`
 
 Required GitHub secrets:
 
