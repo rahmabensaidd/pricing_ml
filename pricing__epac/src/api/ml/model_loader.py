@@ -99,6 +99,7 @@ class ModelLoader:
             formula = self._extract_formula(tags, metadata)
             feature_importance = self._extract_feature_importance(tags, metadata)
             shap_available = self._extract_shap_success(tags)
+            algorithm = self._extract_algorithm(tags, metadata, model)
 
             return {
                 "name": model_name,
@@ -113,6 +114,7 @@ class ModelLoader:
                 "formula": formula,
                 "feature_importance": feature_importance,
                 "shap_available": shap_available,
+                "algorithm": algorithm,
             }
 
         except Exception as e:
@@ -223,6 +225,34 @@ class ModelLoader:
 
     def _extract_shap_success(self, tags: Dict) -> bool:
         return tags.get(settings.TAG_SHAP_SUCCESS, "false").lower() == "true"
+
+    def _extract_algorithm(self, tags: Dict, metadata: Dict, model) -> Optional[str]:
+        for key in ("best_model", "algorithm", "model_algorithm"):
+            value = tags.get(key)
+            if value:
+                return str(value)
+
+        if metadata:
+            for key in ("best_model", "algorithm", "model_algorithm"):
+                value = metadata.get(key)
+                if value:
+                    return str(value)
+
+        try:
+            unwrap = getattr(model, "unwrap_python_model", None)
+            if callable(unwrap):
+                py_model = unwrap()
+                if py_model is not None:
+                    class_name = py_model.__class__.__name__
+                    if class_name:
+                        return class_name
+        except Exception:
+            pass
+
+        class_name = model.__class__.__name__ if model is not None else ""
+        if class_name:
+            return class_name
+        return None
 
     @staticmethod
     def _sanitize_name(name: str) -> str:

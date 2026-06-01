@@ -62,6 +62,7 @@ class ModelMetrics(BaseModel):
 class PredictionGlobal(BaseModel):
     model_name: str
     model_version: int
+    algorithm: Optional[str] = None
     prediction: float
     metrics: ModelMetrics = Field(default_factory=ModelMetrics)
     features_used: List[str] = Field(default_factory=lambda: list(ALL_FEATURES))
@@ -74,6 +75,7 @@ class PredictionGlobal(BaseModel):
 class PredictionFamilyLinear(BaseModel):
     model_name: str
     model_version: int
+    algorithm: Optional[str] = None
     family: str
     prediction: float
     formula: Optional[str] = None
@@ -86,6 +88,7 @@ class PredictionFamilyLinear(BaseModel):
 class PredictionFamilyNonLinear(BaseModel):
     model_name: str
     model_version: int
+    algorithm: Optional[str] = None
     family: str
     prediction: float
     feature_importance: Dict[str, float] = Field(default_factory=dict)
@@ -99,6 +102,7 @@ class PredictionFamilyNonLinear(BaseModel):
 class PredictionCoupleLinear(BaseModel):
     model_name: str
     model_version: int
+    algorithm: Optional[str] = None
     couple: str
     prediction: float
     formula: Optional[str] = None
@@ -111,6 +115,7 @@ class PredictionCoupleLinear(BaseModel):
 class PredictionCoupleNonLinear(BaseModel):
     model_name: str
     model_version: int
+    algorithm: Optional[str] = None
     couple: str
     prediction: float
     feature_importance: Dict[str, float] = Field(default_factory=dict)

@@ -453,6 +453,10 @@ class SQLFileHandler(FileSystemEventHandler):
         env["PYTHONIOENCODING"] = "utf-8"
         env["MLFLOW_TRACKING_URI"] = self.config.mlflow_uri
         env["PYTHONPATH"] = str(PROJECT_ROOT)
+        # Ensure Prefect flow runs are sent to the running Prefect server
+        # instead of local ephemeral mode.
+        env["PREFECT_API_URL"] = os.getenv("PREFECT_API_URL", "http://localhost:4200/api")
+        env["PREFECT_SERVER_ALLOW_EPHEMERAL_MODE"] = "false"
         if self.config.mysql_password:
             env["MYSQL_PASSWORD"] = self.config.mysql_password
 

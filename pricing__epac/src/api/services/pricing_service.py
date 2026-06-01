@@ -113,6 +113,7 @@ class PricingService:
                 return PredictionGlobal(
                     model_name=settings.MODEL_NAME_GLOBAL,
                     model_version=0,
+                    algorithm=None,
                     prediction=0.0,
                     available=False,
                     error=error_message
@@ -128,6 +129,7 @@ class PricingService:
             return PredictionGlobal(
                 model_name=model_info["name"],
                 model_version=model_info["version"],
+                algorithm=model_info.get("algorithm"),
                 prediction=pred_original,
                 metrics=ModelMetrics(**model_info.get("metrics", {})),
                 feature_importance=model_info.get("feature_importance", {}),
@@ -140,6 +142,7 @@ class PricingService:
             return PredictionGlobal(
                 model_name=settings.MODEL_NAME_GLOBAL,
                 model_version=0,
+                algorithm=None,
                 prediction=0.0,
                 available=False,
                 error=str(e)
@@ -166,6 +169,7 @@ class PricingService:
             return PredictionFamilyLinear(
                 model_name=model_info["name"],
                 model_version=model_info["version"],
+                algorithm=model_info.get("algorithm"),
                 family=binding_type,
                 prediction=pred_original,
                 formula=model_info.get("formula"),
@@ -200,6 +204,7 @@ class PricingService:
             return PredictionFamilyNonLinear(
                 model_name=model_info["name"],
                 model_version=model_info["version"],
+                algorithm=model_info.get("algorithm"),
                 family=binding_type,
                 prediction=pred_original,
                 feature_importance=model_info.get("feature_importance", {}),
@@ -236,6 +241,7 @@ class PricingService:
             return PredictionCoupleLinear(
                 model_name=model_info["name"],
                 model_version=model_info["version"],
+                algorithm=model_info.get("algorithm"),
                 couple=couple_key,
                 prediction=pred_original,
                 formula=model_info.get("formula"),
@@ -271,6 +277,7 @@ class PricingService:
             return PredictionCoupleNonLinear(
                 model_name=model_info["name"],
                 model_version=model_info["version"],
+                algorithm=model_info.get("algorithm"),
                 couple=couple_key,
                 prediction=pred_original,
                 feature_importance=model_info.get("feature_importance", {}),

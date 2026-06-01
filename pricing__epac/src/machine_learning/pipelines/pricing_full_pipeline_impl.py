@@ -1722,6 +1722,25 @@ def run_family_training(cleaned_file: Path) -> Dict[str, Any]:
                             f.write(lin["formula"])
                         client.log_artifact(run_id, str(formula_path), f"families/{family}/linear")
 
+                    linear_candidates = lin.get("all_results", [])
+                    if linear_candidates:
+                        linear_candidates_df = pd.DataFrame(
+                            [
+                                {
+                                    "Model": str(item.get("model_name", "")),
+                                    "CV_R2": float(item.get("cv_r2", 0.0)),
+                                    "CV_STD": float(item.get("cv_std", 0.0)),
+                                    "Selected": "yes" if str(item.get("model_name", "")) == str(lin["best_model"]) else "no",
+                                }
+                                for item in linear_candidates
+                            ]
+                        )
+                        linear_candidates_df = linear_candidates_df.sort_values("CV_R2", ascending=False).reset_index(drop=True)
+                        linear_candidates_df.insert(0, "Rank", range(1, len(linear_candidates_df) + 1))
+                        linear_candidates_path = tmp_path / f"{family}_linear_models_comparison.csv"
+                        linear_candidates_df.to_csv(linear_candidates_path, index=False)
+                        client.log_artifact(run_id, str(linear_candidates_path), f"families/{family}/linear")
+
                     # Retrieve version info from local_created_models
                     version = None
                     dvc_tracking_file = None
@@ -1801,6 +1820,26 @@ def run_family_training(cleaned_file: Path) -> Dict[str, Any]:
                         with open(fi_path, "w") as f:
                             json.dump(fi_serializable, f, indent=2)
                         client.log_artifact(run_id, str(fi_path), f"families/{family}/nonlinear")
+
+                    nonlinear_candidates = nl.get("all_results", [])
+                    if nonlinear_candidates:
+                        nonlinear_candidates_df = pd.DataFrame(
+                            [
+                                {
+                                    "Model": str(item.get("model_name", "")),
+                                    "R2_TEST": float(item.get("r2_test", 0.0)),
+                                    "MAE": float(item.get("mae", 0.0)),
+                                    "RMSE": float(item.get("rmse", 0.0)),
+                                    "Selected": "yes" if str(item.get("model_name", "")) == str(nl["best_model"]) else "no",
+                                }
+                                for item in nonlinear_candidates
+                            ]
+                        )
+                        nonlinear_candidates_df = nonlinear_candidates_df.sort_values("R2_TEST", ascending=False).reset_index(drop=True)
+                        nonlinear_candidates_df.insert(0, "Rank", range(1, len(nonlinear_candidates_df) + 1))
+                        nonlinear_candidates_path = tmp_path / f"{family}_nonlinear_models_comparison.csv"
+                        nonlinear_candidates_df.to_csv(nonlinear_candidates_path, index=False)
+                        client.log_artifact(run_id, str(nonlinear_candidates_path), f"families/{family}/nonlinear")
 
                     # Retrieve version info from local_created_models
                     version = None
@@ -2093,6 +2132,25 @@ def run_couple_training(cleaned_file: Path) -> Dict[str, Any]:
                             f.write(formula)
                         client.log_artifact(run_id, str(formula_path), f"pairs/{group}/linear")
 
+                    linear_candidates = lin.get("all_results", [])
+                    if linear_candidates:
+                        linear_candidates_df = pd.DataFrame(
+                            [
+                                {
+                                    "Model": str(item.get("model_name", "")),
+                                    "CV_R2": float(item.get("cv_r2", 0.0)),
+                                    "CV_STD": float(item.get("cv_std", 0.0)),
+                                    "Selected": "yes" if str(item.get("model_name", "")) == best_model else "no",
+                                }
+                                for item in linear_candidates
+                            ]
+                        )
+                        linear_candidates_df = linear_candidates_df.sort_values("CV_R2", ascending=False).reset_index(drop=True)
+                        linear_candidates_df.insert(0, "Rank", range(1, len(linear_candidates_df) + 1))
+                        linear_candidates_path = tmp_path / f"{group}_linear_models_comparison.csv"
+                        linear_candidates_df.to_csv(linear_candidates_path, index=False)
+                        client.log_artifact(run_id, str(linear_candidates_path), f"pairs/{group}/linear")
+
                     # Retrieve version info from created_models_from_training
                     version = None
                     dvc_tracking_file = None
@@ -2200,6 +2258,26 @@ def run_couple_training(cleaned_file: Path) -> Dict[str, Any]:
                         with open(fi_path, "w") as f:
                             json.dump(fi_serializable, f, indent=2)
                         client.log_artifact(run_id, str(fi_path), f"pairs/{group}/nonlinear")
+
+                    nonlinear_candidates = nl.get("all_results", [])
+                    if nonlinear_candidates:
+                        nonlinear_candidates_df = pd.DataFrame(
+                            [
+                                {
+                                    "Model": str(item.get("model_name", "")),
+                                    "R2_TEST": float(item.get("r2_test", 0.0)),
+                                    "MAE": float(item.get("mae", 0.0)),
+                                    "RMSE": float(item.get("rmse", 0.0)),
+                                    "Selected": "yes" if str(item.get("model_name", "")) == best_model else "no",
+                                }
+                                for item in nonlinear_candidates
+                            ]
+                        )
+                        nonlinear_candidates_df = nonlinear_candidates_df.sort_values("R2_TEST", ascending=False).reset_index(drop=True)
+                        nonlinear_candidates_df.insert(0, "Rank", range(1, len(nonlinear_candidates_df) + 1))
+                        nonlinear_candidates_path = tmp_path / f"{group}_nonlinear_models_comparison.csv"
+                        nonlinear_candidates_df.to_csv(nonlinear_candidates_path, index=False)
+                        client.log_artifact(run_id, str(nonlinear_candidates_path), f"pairs/{group}/nonlinear")
 
                     # Retrieve version info from created_models_from_training
                     version = None

@@ -1131,7 +1131,15 @@ def train_linear_models_regularized(df_family, family_name, min_samples=40, cv_f
         "predicted_mean": float(y_pred.mean()),
         "predicted_median": float(np.median(y_pred)),
         "actual_mean": float(y.mean()),
-        "actual_median": float(np.median(y))
+        "actual_median": float(np.median(y)),
+        "all_results": [
+            {
+                "model_name": r["model_name"],
+                "cv_r2": float(r["cv_r2"]),
+                "cv_std": float(r["cv_std"]),
+            }
+            for r in all_results
+        ],
     }
 
 

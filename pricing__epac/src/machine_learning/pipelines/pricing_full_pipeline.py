@@ -9,7 +9,9 @@ import traceback
 from typing import Dict, Optional
 
 import mlflow
+import pandas as pd
 from prefect import flow
+from prefect.utilities.annotations import quote
 
 from pricing__epac.src.machine_learning.pipelines.pipeline_client_features import (
     create_client_features_task as pipeline_create_client_features_task,
@@ -61,44 +63,54 @@ def pricing_mlops_pipeline(
         clean_artifacts()
 
     # STEP 1
+    consolidation_future = None
     if run_consolidation:
         print("\nSTEP 1: DATA CONSOLIDATION")
-        pipeline_consolidate_data_task.fn("PRICING_SQL_FILE", PACKAGE_DIR)
+        consolidation_future = pipeline_consolidate_data_task.submit("PRICING_SQL_FILE", PACKAGE_DIR)
+        consolidation_future.result()
 
     # STEP 2
     print("\nSTEP 2: PREPROCESSING")
-    cleaned_path, sample_X = pipeline_run_preprocessing.fn(
+    preprocess_wait_for = [consolidation_future] if consolidation_future is not None else None
+    cleaned_data_path = PACKAGE_DIR / "data" / "processed" / "pricing_fully_cleaned.xlsx"
+    preprocess_future = pipeline_run_preprocessing.submit(
         consolidated_file=CONSOLIDATED_FILE,
-        cleaned_path=PACKAGE_DIR / "data" / "processed" / "pricing_fully_cleaned.xlsx",
+        cleaned_path=cleaned_data_path,
         raw_features=RAW_FEATURES,
         project_root=PROJECT_ROOT,
+        wait_for=preprocess_wait_for,
     )
+    cleaned_path, sample_X = preprocess_future.result()
 
     # STEP 3
     training_data_path = cleaned_path
     client_features_result: Optional[Dict] = None
+    client_features_future = None
     if run_client_features:
         print("\nSTEP 3: CLIENT FEATURES")
+        client_features = pd.DataFrame()
         try:
-            enriched_path, client_features, enriched_df, mlflow_result = pipeline_create_client_features_task.fn(
+            client_features_future = pipeline_create_client_features_task.submit(
                 cleaned_file=cleaned_path,
                 client_features_file=CLIENT_FEATURES_FILE,
                 enriched_data_file=ENRICHED_DATA_FILE,
                 mlflow_model_name=MLFLOW_MODEL_NAME_CLIENT_FEATURES,
                 dvc_tracking_dir=DVC_TRACKING_DIR,
                 project_root=PROJECT_ROOT,
+                wait_for=[preprocess_future],
             )
-            client_stats = pipeline_validate_client_features.fn(client_features)
+            enriched_path, client_features, enriched_df, mlflow_result = client_features_future.result()
             results["client_features"] = {
                 "path": str(enriched_path),
-                "stats": client_stats,
                 "n_clients": len(client_features) if not client_features.empty else 0,
                 "mlflow": mlflow_result,
                 "dvc_hashes": mlflow_result.get("dvc_hashes", {}),
             }
             client_features_result = mlflow_result
             if enriched_path != cleaned_path and not enriched_df.empty:
-                training_data_path = enriched_path
+                # Use canonical enriched file path to avoid implicit Prefect
+                # data dependency edges from this task to downstream tasks.
+                training_data_path = ENRICHED_DATA_FILE
                 available_features = [c for c in RAW_FEATURES if c in enriched_df.columns]
                 if available_features:
                     sample_X = enriched_df[available_features].sample(n=min(100, len(enriched_df)), random_state=42)
@@ -106,22 +118,43 @@ def pricing_mlops_pipeline(
             print(f"Client features failed: {exc}")
             traceback.print_exc()
             results["client_features"] = {"error": str(exc)}
+        finally:
+            # Run validation logic without creating a Prefect task run in the UI.
+            client_stats = pipeline_validate_client_features.fn(client_features)
+            results.setdefault("client_features", {})
+            results["client_features"]["stats"] = client_stats
 
     # STEP 4
+    # Keep family/pair chain independent from the client-features branch in Prefect DAG.
+    # Client features stays linked only to Global training.
+    family_pair_data_path = cleaned_data_path
+    global_future = None
     if run_global:
         print("\nSTEP 4: GLOBAL TRAINING")
         try:
-            results["global"] = run_global_training(training_data_path, sample_X)
+            global_wait_for = [client_features_future] if client_features_future is not None else [preprocess_future]
+            global_future = run_global_training.submit(
+                quote(training_data_path),
+                sample_X,
+                wait_for=global_wait_for,
+            )
+            results["global"] = global_future.result()
         except Exception as exc:
             print(f"Global training failed: {exc}")
             traceback.print_exc()
             results["global"] = {"error": str(exc), "model_name": MLFLOW_MODEL_NAME_GLOBAL}
 
     # STEP 5
+    family_future = None
     if run_family:
         print("\nSTEP 5: FAMILY TRAINING")
         try:
-            results["family"] = run_family_training(training_data_path)
+            family_wait_for = [global_future] if global_future is not None else [preprocess_future]
+            family_future = run_family_training.submit(
+                quote(family_pair_data_path),
+                wait_for=family_wait_for,
+            )
+            results["family"] = family_future.result()
         except Exception as exc:
             print(f"Family training failed: {exc}")
             traceback.print_exc()
@@ -131,7 +164,12 @@ def pricing_mlops_pipeline(
     if run_couple:
         print("\nSTEP 6: COUPLE TRAINING")
         try:
-            results["couple"] = run_couple_training(training_data_path)
+            couple_wait_for = [family_future] if family_future is not None else ([global_future] if global_future is not None else [preprocess_future])
+            couple_future = run_couple_training.submit(
+                quote(family_pair_data_path),
+                wait_for=couple_wait_for,
+            )
+            results["couple"] = couple_future.result()
         except Exception as exc:
             print(f"Couple training failed: {exc}")
             traceback.print_exc()
