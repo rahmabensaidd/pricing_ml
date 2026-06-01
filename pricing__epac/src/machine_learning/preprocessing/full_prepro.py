@@ -182,7 +182,7 @@ USAGE EXAMPLES
 ================================================================================
 
 Basic usage:
-    from full_preprocess import full_preprocessing, save_processed
+    from full_prepro import full_preprocessing, save_processed
     from pathlib import Path
 
     input_path = Path("data/consolidated/dataset_complet.xlsx")
@@ -190,10 +190,10 @@ Basic usage:
     save_processed(df)
 
 Command line:
-    python full_preprocess.py --verbose
+    python full_prepro.py --verbose
 
 With custom input:
-    python full_preprocess.py --input custom_data.xlsx
+    python full_prepro.py --input custom_data.xlsx
 
 ================================================================================
 """

@@ -21,7 +21,7 @@ joblib>=1.2.0
 #Exécuter avec couverture de code :
 
 #bash
-#pytest tests/test_full_preprocess.py --cov=src.preprocessing.full_preprocess --cov-report=html
+#pytest tests/test_full_preprocess.py --cov=src.preprocessing.full_prepro --cov-report=html
 #Exécuter uniquement les tests rapides (ignorer les tests lents) :
 
 #bash

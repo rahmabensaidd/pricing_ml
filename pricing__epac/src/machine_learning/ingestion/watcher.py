@@ -441,7 +441,7 @@ class SQLFileHandler(FileSystemEventHandler):
             "python",
             "-u",
             "-m",
-            "pricing__epac.src.machine_learning.flows.pricing_full_pipeline",
+            "pricing__epac.src.machine_learning.pipelines.pricing_full_pipeline",
             "--mode",
             self.mode,
             "--input",
@@ -715,3 +715,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

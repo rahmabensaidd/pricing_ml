@@ -24,7 +24,7 @@ import warnings
 import os
 # Add root path to find openssl_patch
 import sys
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 from pricing__epac import openssl_patch
 from pricing__epac.src.config.settings import settings
 import time
@@ -94,7 +94,7 @@ mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
 # ────────────────────────────────────────────────
 # INITIAL FEATURE CONFIGURATION
 # ────────────────────────────────────────────────
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = settings.PROJECT_ROOT
 MODELS_DIR = settings.MODELS_ARTIFACT_ROOT / "bindingtype_siren_regularized"
 MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -1659,3 +1659,4 @@ if __name__ == "__main__":
         min_samples_couple=args.min_samples,
         register_to_mlflow=not args.no_register
     )
+

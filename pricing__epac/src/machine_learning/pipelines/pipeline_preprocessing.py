@@ -6,10 +6,10 @@ from typing import List, Tuple
 import pandas as pd
 from prefect import task
 
-from pricing__epac.src.machine_learning.orchestration.consolidate_data import run_consolidation
+from pricing__epac.src.machine_learning.ingestion.consolidate_data import run_consolidation
 from pricing__epac.src.machine_learning.preprocessing.full_prepro import full_preprocessing, save_processed
 
-from pricing__epac.src.machine_learning.flows.pipeline_support import run_dvc_pull
+from pricing__epac.src.machine_learning.pipelines.pipeline_support import run_dvc_pull
 
 
 @task(name="Consolidate data", retries=1)
@@ -59,3 +59,4 @@ def run_preprocessing(
 
     sample_x = df[available].sample(n=min(100, len(df)), random_state=42)
     return cleaned_path, sample_x
+

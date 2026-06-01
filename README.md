@@ -28,8 +28,8 @@ Core packages:
 - `pricing__epac/src/config`
 - `pricing__epac/src/machine_learning/preprocessing`
 - `pricing__epac/src/machine_learning/training`
-- `pricing__epac/src/machine_learning/orchestration`
-- `pricing__epac/src/machine_learning/flows`
+- `pricing__epac/src/machine_learning/ingestion`
+- `pricing__epac/src/machine_learning/pipelines`
 - `pricing__epac/src/shared`
 
 ## Requirements
@@ -123,8 +123,8 @@ poetry run python -m pricing__epac.src.api.main --reload
 Optional ML jobs:
 
 ```bash
-poetry run python -m pricing__epac.src.machine_learning.orchestration.watcher
-poetry run python -m pricing__epac.src.machine_learning.flows.pricing_full_pipeline
+poetry run python -m pricing__epac.src.machine_learning.ingestion.watcher
+poetry run python -m pricing__epac.src.machine_learning.pipelines.pricing_full_pipeline
 ```
 
 ### 1. Install dependencies
@@ -172,7 +172,7 @@ Useful endpoints:
 ### 4. Start the watcher
 
 ```bash
-poetry run python -m pricing__epac.src.machine_learning.orchestration.watcher
+poetry run python -m pricing__epac.src.machine_learning.ingestion.watcher
 ```
 
 Watcher outputs:
@@ -183,7 +183,7 @@ Watcher outputs:
 ### 5. Run the pipeline manually
 
 ```bash
-poetry run python -m pricing__epac.src.machine_learning.flows.pricing_full_pipeline
+poetry run python -m pricing__epac.src.machine_learning.pipelines.pricing_full_pipeline
 ```
 
 ## Useful Tree
@@ -199,8 +199,8 @@ pricing__epac/
     machine_learning/
       preprocessing/
       training/
-      orchestration/
-      flows/
+      ingestion/
+      pipelines/
     shared/
     tests/
   data/
@@ -224,7 +224,7 @@ Quick checks:
 
 ```bash
 poetry run python -c "import pricing__epac.src.api.pricing_controller"
-poetry run python -c "from pricing__epac.src.machine_learning.orchestration.watcher import SQLFileHandler"
+poetry run python -c "from pricing__epac.src.machine_learning.ingestion.watcher import SQLFileHandler"
 poetry run python -m pytest pricing__epac/src/tests -q
 ```
 
@@ -254,10 +254,14 @@ Required GitHub secrets:
 - `pricing__epac/mlruns` is no longer the normal runtime path when MLflow runs on PostgreSQL + MinIO.
 - Runtime outputs were moved from data folders to `pricing__epac/runtime`.
 - Artifacts are now under `pricing__epac/artifacts`.
-- Some compatibility wrappers still exist and can be removed progressively:
-  - `pricing__epac/src/api/models`
-  - `pricing__epac/src/machine_learning/models`
-  - `pricing__epac/src/machine_learning/scripts`
+- `full_preprocess.py` wrapper was removed; use `full_prepro.py` as the only preprocessing module.
+- Legacy wrapper folders `pricing__epac/src/machine_learning/models` and
+  `pricing__epac/src/machine_learning/scripts` were removed to keep a single canonical import path.
+- Training public modules are now:
+  - `global_training.py`
+  - `bindingtype_training.py`
+  - `bindingtype_siren_training.py`
+  - `client_features_training.py`
 
 ## More Documentation
 

@@ -5,9 +5,9 @@ from unittest.mock import Mock, patch
 import numpy as np
 import pandas as pd
 
-from pricing__epac.src.machine_learning.flows.pipeline_client_features import mlflow_log_client_features
-from pricing__epac.src.machine_learning.orchestration.watcher import SQLFileHandler
-from pricing__epac.src.machine_learning.training.client_history_features import aggregate_client_features
+from pricing__epac.src.machine_learning.pipelines.pipeline_client_features import mlflow_log_client_features
+from pricing__epac.src.machine_learning.ingestion.watcher import SQLFileHandler
+from pricing__epac.src.machine_learning.training.client_features_training import aggregate_client_features
 
 
 def test_aggregate_client_features_handles_mixed_reception_date_types():
@@ -83,26 +83,26 @@ def test_mlflow_log_client_features_uses_current_mlflow_api(tmp_path):
     run_context = DummyRunContext(run)
     logged_model = SimpleNamespace(registered_model_version="7")
 
-    with patch("pricing__epac.src.machine_learning.flows.pipeline_client_features.mlflow.set_experiment"), patch(
-        "pricing__epac.src.machine_learning.flows.pipeline_client_features.mlflow.start_run",
+    with patch("pricing__epac.src.machine_learning.pipelines.pipeline_client_features.mlflow.set_experiment"), patch(
+        "pricing__epac.src.machine_learning.pipelines.pipeline_client_features.mlflow.start_run",
         return_value=run_context,
-    ), patch("pricing__epac.src.machine_learning.flows.pipeline_client_features.mlflow.set_tag"), patch(
-        "pricing__epac.src.machine_learning.flows.pipeline_client_features.mlflow.log_param"
-    ), patch("pricing__epac.src.machine_learning.flows.pipeline_client_features.mlflow.log_metric"), patch(
-        "pricing__epac.src.machine_learning.flows.pipeline_client_features.mlflow.log_artifact"
+    ), patch("pricing__epac.src.machine_learning.pipelines.pipeline_client_features.mlflow.set_tag"), patch(
+        "pricing__epac.src.machine_learning.pipelines.pipeline_client_features.mlflow.log_param"
+    ), patch("pricing__epac.src.machine_learning.pipelines.pipeline_client_features.mlflow.log_metric"), patch(
+        "pricing__epac.src.machine_learning.pipelines.pipeline_client_features.mlflow.log_artifact"
     ), patch(
-        "pricing__epac.src.machine_learning.flows.pipeline_client_features.mlflow.pyfunc.log_model",
+        "pricing__epac.src.machine_learning.pipelines.pipeline_client_features.mlflow.pyfunc.log_model",
         return_value=logged_model,
     ) as log_model, patch(
-        "pricing__epac.src.machine_learning.flows.pipeline_client_features.save_dvc_hash_tracking",
+        "pricing__epac.src.machine_learning.pipelines.pipeline_client_features.save_dvc_hash_tracking",
         return_value=tmp_path / "tracking.json",
     ), patch(
-        "pricing__epac.src.machine_learning.flows.pipeline_client_features.set_model_version_tags"
+        "pricing__epac.src.machine_learning.pipelines.pipeline_client_features.set_model_version_tags"
     ), patch(
-        "pricing__epac.src.machine_learning.flows.pipeline_client_features.get_latest_model_version",
+        "pricing__epac.src.machine_learning.pipelines.pipeline_client_features.get_latest_model_version",
         return_value=7,
     ), patch(
-        "pricing__epac.src.machine_learning.flows.pipeline_client_features.set_production_alias"
+        "pricing__epac.src.machine_learning.pipelines.pipeline_client_features.set_production_alias"
     ):
         result = mlflow_log_client_features.fn(
             client_features=client_features,
@@ -115,3 +115,5 @@ def test_mlflow_log_client_features_uses_current_mlflow_api(tmp_path):
     assert result["model_version"] == 7
     assert log_model.call_args.kwargs["name"] == "client_features_model"
     assert "artifact_path" not in log_model.call_args.kwargs
+
+

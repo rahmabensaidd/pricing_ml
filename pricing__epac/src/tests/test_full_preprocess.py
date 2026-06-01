@@ -8,9 +8,11 @@ from pricing__epac.src.api.schemas.pricing_models import PricingRequest
 from pricing__epac.src.api.services.feature_service import FeatureService
 from pricing__epac.src.api.services.mlflow_service import MLflowService
 from pricing__epac.src.config.settings import Settings
-from pricing__epac.src.machine_learning.preprocessing import full_preprocess
 from pricing__epac.src.machine_learning.preprocessing.full_prepro import (
     cleanup_temp_files,
+    full_preprocessing,
+    final_normalization,
+    uppercase_string_columns,
     get_project_root,
     save_processed,
 )
@@ -102,10 +104,10 @@ def test_cleanup_temp_files_preserves_watch_folder(tmp_path):
     assert not dump_file.exists()
 
 
-def test_legacy_full_preprocess_module_wraps_full_prepro():
-    assert full_preprocess.full_preprocessing is not None
-    assert callable(full_preprocess.uppercase_all_string_columns)
-    assert callable(full_preprocess.replace_nat_nan_none)
+def test_full_prepro_module_exposes_preprocessing_api():
+    assert callable(full_preprocessing)
+    assert callable(uppercase_string_columns)
+    assert callable(final_normalization)
 
 
 def test_mlflow_service_uses_current_loader_api():

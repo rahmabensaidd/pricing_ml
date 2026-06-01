@@ -12,12 +12,12 @@ from joblib import dump
 from mlflow.pyfunc import PythonModel
 from prefect import task
 
-from pricing__epac.src.machine_learning.training.client_history_features import (
+from pricing__epac.src.machine_learning.training.client_features_training import (
     add_client_features_to_orders,
     create_client_features,
     save_client_features,
 )
-from pricing__epac.src.machine_learning.flows.pipeline_support import (
+from pricing__epac.src.machine_learning.pipelines.pipeline_support import (
     ALIAS_PRODUCTION,
     TAG_ARTIFACT_PATH,
     TAG_DATA_TYPE,
@@ -274,3 +274,5 @@ def validate_client_features(client_features: pd.DataFrame) -> Dict[str, Any]:
         stats["avg_price_mean"] = float(client_features["client_avg_price_ht"].mean())
 
     return stats
+
+
