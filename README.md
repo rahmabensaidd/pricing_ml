@@ -92,6 +92,13 @@ docker compose up -d --build
 - MinIO console: `http://localhost:9001`
 - Prefect UI: `http://localhost:4200`
 
+Optional: start watcher container (Linux/Docker mode)
+
+```bash
+docker compose --profile watcher up -d pricing-watcher
+docker compose logs -f pricing-watcher
+```
+
 5. Check logs when debugging
 
 ```bash
@@ -153,6 +160,7 @@ This will start:
 - `mlflow-server` on `localhost:5000`
 - `prefect-server` on `localhost:4200`
 - `pricing-api` on `localhost:8000`
+- `pricing-watcher` via profile `watcher` (`docker compose --profile watcher up -d pricing-watcher`)
 
 Useful services:
 
@@ -246,7 +254,12 @@ It builds and pushes:
 
 - `${DOCKERHUB_USERNAME}/pricing-epac-api`
 - `${DOCKERHUB_USERNAME}/pricing-epac-mlflow`
-- `${DOCKERHUB_USERNAME}/pricing-epac-prefect`
+- `${DOCKERHUB_USERNAME}/pricing-epac-copilot`
+
+Runtime-only images pulled directly in compose:
+
+- `prefecthq/prefect:3-python3.11` (official Prefect image)
+- `pricing-watcher` reuses `${DOCKERHUB_USERNAME}/pricing-epac-api`
 
 Required GitHub secrets:
 

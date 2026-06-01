@@ -78,27 +78,27 @@ jobs:
           tags: ${{ steps.meta_mlflow.outputs.tags }}
           labels: ${{ steps.meta_mlflow.outputs.labels }}
 
-      - name: Extract metadata for Prefect image
-        id: meta_prefect
+      - name: Extract metadata for Copilot image
+        id: meta_copilot
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.DOCKERHUB_USERNAME }}/pricing-epac-prefect
+          images: ${{ env.DOCKERHUB_USERNAME }}/pricing-epac-copilot
           tags: |
             type=raw,value=latest
             type=sha,format=long
 
-      - name: Build and push Prefect image
-        id: build_prefect
+      - name: Build and push Copilot image
+        id: build_copilot
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: ./Dockerfile.prefect
+          file: ./Dockerfile.copilot
           push: true
-          tags: ${{ steps.meta_prefect.outputs.tags }}
-          labels: ${{ steps.meta_prefect.outputs.labels }}
+          tags: ${{ steps.meta_copilot.outputs.tags }}
+          labels: ${{ steps.meta_copilot.outputs.labels }}
 
       - name: Print published digests
         run: |
           echo "API digest: ${{ steps.build_api.outputs.digest }}"
           echo "MLflow digest: ${{ steps.build_mlflow.outputs.digest }}"
-          echo "Prefect digest: ${{ steps.build_prefect.outputs.digest }}"
+          echo "Copilot digest: ${{ steps.build_copilot.outputs.digest }}"

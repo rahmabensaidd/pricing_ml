@@ -165,15 +165,83 @@ services:
     networks:
       - epac_network
     restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8000/health" ]
+      interval: 15s
+      timeout: 5s
+      retries: 15
 
-  prefect-server:
+  pricing-watcher:
+    profiles:
+      - watcher
+    image: ${DOCKERHUB_USERNAME:-local}/pricing-epac-api:latest
+    container_name: pricing-watcher
+    depends_on:
+      mysql:
+        condition: service_healthy
+      mlflow-server:
+        condition: service_healthy
+      prefect-server:
+        condition: service_started
+    command: >
+      python -m pricing__epac.src.machine_learning.ingestion.watcher
+      --mode ${WATCHER_MODE:-all}
+    environment:
+      MLFLOW_TRACKING_URI: ${WATCHER_MLFLOW_TRACKING_URI:-http://mlflow-server:5000}
+      PREFECT_API_URL: ${PREFECT_API_URL:-http://prefect-server:4200/api}
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
+      MYSQL_USER: ${MYSQL_USER:-root}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?Set MYSQL_PASSWORD in .env}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-temp_epac}
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+      AWS_ACCESS_KEY_ID: ${MLFLOW_S3_ACCESS_KEY:?Set MLFLOW_S3_ACCESS_KEY in .env}
+      AWS_SECRET_ACCESS_KEY: ${MLFLOW_S3_SECRET_KEY:?Set MLFLOW_S3_SECRET_KEY in .env}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
+      MLFLOW_BUCKET_NAME: ${MLFLOW_BUCKET_NAME:-mlflow-artifacts}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      - ./pricing__epac/data:/app/pricing__epac/data
+      - ./pricing__epac/runtime:/app/pricing__epac/runtime
+      - ./pricing__epac/artifacts:/app/pricing__epac/artifacts
+      - ./.env:/app/.env:ro
+    networks:
+      - epac_network
+    restart: unless-stopped
+
+  pricing-copilot:
     build:
       context: .
-      dockerfile: Dockerfile.prefect
-    image: ${DOCKERHUB_USERNAME:-local}/pricing-epac-prefect:latest
+      dockerfile: Dockerfile.copilot
+    image: ${DOCKERHUB_USERNAME:-local}/pricing-epac-copilot:latest
+    container_name: pricing-copilot
+    depends_on:
+      pricing-api:
+        condition: service_healthy
+    ports:
+      - "8001:8001"
+    environment:
+      PRICING_API_BASE_URL: ${PRICING_API_BASE_URL:-http://pricing-api:8000}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      XAI_API_KEY: ${XAI_API_KEY:-}
+    networks:
+      - epac_network
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8001/health" ]
+      interval: 15s
+      timeout: 5s
+      retries: 15
+  prefect-server:
+    image: prefecthq/prefect:3-python3.11
     container_name: prefect-server
     ports:
       - "4200:4200"
+    command: >
+      prefect server start
+      --host 0.0.0.0
+      --port 4200
     environment:
       PREFECT_SERVER_API_HOST: 0.0.0.0
       PREFECT_SERVER_API_PORT: 4200
